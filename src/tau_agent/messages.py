@@ -1,212 +1,277 @@
+"""Pi-compatible provider-neutral content and transcript message models."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Literal, TypeAlias
-from uuid import uuid4
+from time import time
+from typing import Annotated, Any, Literal
 
-from .tools import ToolCall, utc_now
-from .types import JSONObject, JSONValue
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
-MessageRole: TypeAlias = Literal["system", "user", "assistant", "tool"]
+from tau_agent.types import JSONValue
 
 
-@dataclass(frozen=True, slots=True)
-class SystemMessage:
-    content: str
-    id: str = field(default_factory=lambda: uuid4().hex)
-    created_at: datetime = field(default_factory=utc_now)
-    metadata: JSONObject | None = None
-
-    @property
-    def role(self) -> MessageRole:
-        return "system"
-
-    def to_dict(self) -> JSONObject:
-        out: JSONObject = {
-            "id": self.id,
-            "role": self.role,
-            "content": self.content,
-            "created_at": self.created_at.isoformat(),
-        }
-        if self.metadata is not None:
-            out["metadata"] = self.metadata
-        return out
-
-    @classmethod
-    def from_dict(cls, data: JSONObject) -> "SystemMessage":
-        created_at_raw = data.get("created_at")
-        created_at = utc_now()
-        if isinstance(created_at_raw, str):
-            try:
-                created_at = datetime.fromisoformat(created_at_raw)
-            except ValueError:
-                created_at = utc_now()
-
-        return cls(
-            id=str(data["id"]) if "id" in data else uuid4().hex,
-            content=str(data.get("content") or ""),
-            created_at=created_at,
-            metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
-        )
+def _to_camel(name: str) -> str:
+    parts = name.split("_")
+    return parts[0] + "".join(part.title() for part in parts[1:])
 
 
-@dataclass(frozen=True, slots=True)
-class UserMessage:
-    content: str
-    id: str = field(default_factory=lambda: uuid4().hex)
-    created_at: datetime = field(default_factory=utc_now)
-    metadata: JSONObject | None = None
-
-    @property
-    def role(self) -> MessageRole:
-        return "user"
-
-    def to_dict(self) -> JSONObject:
-        out: JSONObject = {
-            "id": self.id,
-            "role": self.role,
-            "content": self.content,
-            "created_at": self.created_at.isoformat(),
-        }
-        if self.metadata is not None:
-            out["metadata"] = self.metadata
-        return out
-
-    @classmethod
-    def from_dict(cls, data: JSONObject) -> "UserMessage":
-        created_at_raw = data.get("created_at")
-        created_at = utc_now()
-        if isinstance(created_at_raw, str):
-            try:
-                created_at = datetime.fromisoformat(created_at_raw)
-            except ValueError:
-                created_at = utc_now()
-
-        return cls(
-            id=str(data["id"]) if "id" in data else uuid4().hex,
-            content=str(data.get("content") or ""),
-            created_at=created_at,
-            metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
-        )
+def current_timestamp_ms() -> int:
+    """Return the current Unix timestamp in milliseconds."""
+    return int(time() * 1000)
 
 
-@dataclass(frozen=True, slots=True)
-class AssistantMessage:
-    content: str | None = None
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    id: str = field(default_factory=lambda: uuid4().hex)
-    created_at: datetime = field(default_factory=utc_now)
-    metadata: JSONObject | None = None
+class WireModel(BaseModel):
+    """Strict model with Python field names and Pi-compatible JSON aliases."""
 
-    @property
-    def role(self) -> MessageRole:
-        return "assistant"
-
-    def to_dict(self) -> JSONObject:
-        out: JSONObject = {
-            "id": self.id,
-            "role": self.role,
-            "created_at": self.created_at.isoformat(),
-        }
-        if self.content is not None:
-            out["content"] = self.content
-        if self.tool_calls:
-            out["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
-        if self.metadata is not None:
-            out["metadata"] = self.metadata
-        return out
-
-    @classmethod
-    def from_dict(cls, data: JSONObject) -> "AssistantMessage":
-        created_at_raw = data.get("created_at")
-        created_at = utc_now()
-        if isinstance(created_at_raw, str):
-            try:
-                created_at = datetime.fromisoformat(created_at_raw)
-            except ValueError:
-                created_at = utc_now()
-
-        tool_calls: list[ToolCall] = []
-        tool_calls_raw = data.get("tool_calls")
-        if isinstance(tool_calls_raw, list):
-            for item in tool_calls_raw:
-                if isinstance(item, dict):
-                    tool_calls.append(ToolCall.from_dict(item))
-
-        content_raw = data.get("content")
-        content = content_raw if isinstance(content_raw, str) else None
-
-        return cls(
-            id=str(data["id"]) if "id" in data else uuid4().hex,
-            content=content,
-            tool_calls=tool_calls,
-            created_at=created_at,
-            metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
-        )
+    model_config = ConfigDict(
+        extra="forbid",
+        validate_by_name=True,
+        validate_by_alias=True,
+        serialize_by_alias=True,
+        alias_generator=_to_camel,
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class ToolMessage:
-    tool_call_id: str
+class UsageCost(WireModel):
+    """Billed response cost in USD."""
+
+    input: float = 0.0
+    output: float = 0.0
+    cache_read: float = 0.0
+    cache_write: float = 0.0
+    total: float = 0.0
+
+
+class Usage(WireModel):
+    """Provider-reported token usage for one assistant response."""
+
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+    cache_write_1h: int | None = None
+    reasoning: int | None = None
+    total_tokens: int = 0
+    cost: UsageCost = UsageCost()
+
+
+class TextContent(WireModel):
+    type: Literal["text"] = "text"
+    text: str
+    text_signature: str | None = None
+
+
+class ThinkingContent(WireModel):
+    type: Literal["thinking"] = "thinking"
+    thinking: str
+    thinking_signature: str | None = None
+    redacted: bool = False
+
+
+class ImageContent(WireModel):
+    type: Literal["image"] = "image"
+    data: str
+    mime_type: str
+
+
+class ToolCall(WireModel):
+    """A tool call content block requested by the assistant."""
+
+    type: Literal["toolCall"] = "toolCall"
+    id: str
     name: str
-    content: JSONValue | None = None
-    id: str = field(default_factory=lambda: uuid4().hex)
-    created_at: datetime = field(default_factory=utc_now)
-    metadata: JSONObject | None = None
+    arguments: dict[str, JSONValue] = Field(default_factory=dict)
+    thought_signature: str | None = None
+
+
+type UserContent = str | list[TextContent | ImageContent]
+type AssistantContent = TextContent | ThinkingContent | ToolCall
+type ToolResultContent = TextContent | ImageContent
+
+
+class UserMessage(WireModel):
+    role: Literal["user"] = "user"
+    content: UserContent
+    timestamp: int = Field(default_factory=current_timestamp_ms)
 
     @property
-    def role(self) -> MessageRole:
-        return "tool"
+    def text(self) -> str:
+        return content_text(self.content)
 
-    def to_dict(self) -> JSONObject:
-        out: JSONObject = {
-            "id": self.id,
-            "role": self.role,
-            "tool_call_id": self.tool_call_id,
-            "name": self.name,
-            "created_at": self.created_at.isoformat(),
-        }
-        if self.content is not None:
-            out["content"] = self.content
-        if self.metadata is not None:
-            out["metadata"] = self.metadata
-        return out
 
+class AssistantDiagnosticError(WireModel):
+    name: str | None = None
+    message: str
+    stack: str | None = None
+    code: str | int | None = None
+
+
+class AssistantMessageDiagnostic(WireModel):
+    type: str
+    timestamp: int = Field(default_factory=current_timestamp_ms)
+    error: AssistantDiagnosticError | None = None
+    details: dict[str, JSONValue] | None = None
+
+
+StopReason = Literal["stop", "length", "toolUse", "error", "aborted"]
+
+
+class AssistantMessage(WireModel):
+    """A Pi-compatible assistant message with ordered content blocks."""
+
+    role: Literal["assistant"] = "assistant"
+    content: list[AssistantContent] = Field(default_factory=list)
+    api: str = "unknown"
+    provider: str = "unknown"
+    model: str = "unknown"
+    response_model: str | None = None
+    response_id: str | None = None
+    diagnostics: list[AssistantMessageDiagnostic] | None = None
+    usage: Usage = Usage()
+    stop_reason: StopReason = "stop"
+    error_message: str | None = None
+    timestamp: int = Field(default_factory=current_timestamp_ms)
+
+    @model_validator(mode="before")
     @classmethod
-    def from_dict(cls, data: JSONObject) -> "ToolMessage":
-        created_at_raw = data.get("created_at")
-        created_at = utc_now()
-        if isinstance(created_at_raw, str):
-            try:
-                created_at = datetime.fromisoformat(created_at_raw)
-            except ValueError:
-                created_at = utc_now()
+    def _normalize_convenient_content(cls, value: object) -> object:
+        """Accept a string only as a Python construction convenience.
 
-        content = data.get("content") if "content" in data else None
+        The stored model and serialized protocol are always block based. This
+        keeps provider and test construction concise without creating a second
+        message representation.
+        """
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        content = data.get("content")
+        if isinstance(content, str):
+            data["content"] = [TextContent(text=content)] if content else []
+        usage = data.get("usage")
+        if usage is None:
+            data["usage"] = Usage()
+        return data
 
-        return cls(
-            id=str(data["id"]) if "id" in data else uuid4().hex,
-            tool_call_id=str(data.get("tool_call_id") or ""),
-            name=str(data.get("name") or ""),
-            content=content,
-            created_at=created_at,
-            metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
+    @property
+    def text(self) -> str:
+        return "".join(block.text for block in self.content if isinstance(block, TextContent))
+
+    @property
+    def thinking_text(self) -> str:
+        return "".join(
+            block.thinking for block in self.content if isinstance(block, ThinkingContent)
         )
 
+    @property
+    def tool_calls(self) -> tuple[ToolCall, ...]:
+        return tuple(block for block in self.content if isinstance(block, ToolCall))
 
-TranscriptMessage: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolMessage
+
+class ToolResultMessage(WireModel):
+    role: Literal["toolResult"] = "toolResult"
+    tool_call_id: str
+    tool_name: str
+    content: list[ToolResultContent] = Field(default_factory=list)
+    details: JSONValue = None
+    added_tool_names: list[str] | None = None
+    is_error: bool = False
+    timestamp: int = Field(default_factory=current_timestamp_ms)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_convenient_content(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        content = data.get("content")
+        if isinstance(content, str):
+            data["content"] = [TextContent(text=content)] if content else []
+        return data
+
+    @property
+    def text(self) -> str:
+        return content_text(self.content)
 
 
-def message_from_dict(data: JSONObject) -> TranscriptMessage:
-    role = data.get("role")
-    if role == "system":
-        return SystemMessage.from_dict(data)
-    if role == "user":
-        return UserMessage.from_dict(data)
-    if role == "assistant":
-        return AssistantMessage.from_dict(data)
-    if role == "tool":
-        return ToolMessage.from_dict(data)
-    return UserMessage.from_dict(data)
+class BashExecutionMessage(WireModel):
+    role: Literal["bashExecution"] = "bashExecution"
+    command: str
+    output: str
+    exit_code: int | None = None
+    cancelled: bool = False
+    truncated: bool = False
+    full_output_path: str | None = None
+    timestamp: int = Field(default_factory=current_timestamp_ms)
+    exclude_from_context: bool = False
+
+
+class CustomMessage(WireModel):
+    role: Literal["custom"] = "custom"
+    custom_type: str
+    content: UserContent
+    display: bool = True
+    details: JSONValue = None
+    timestamp: int = Field(default_factory=current_timestamp_ms)
+
+    @property
+    def text(self) -> str:
+        return content_text(self.content)
+
+
+class BranchSummaryMessage(WireModel):
+    role: Literal["branchSummary"] = "branchSummary"
+    summary: str
+    from_id: str
+    timestamp: int = Field(default_factory=current_timestamp_ms)
+
+
+class CompactionSummaryMessage(WireModel):
+    role: Literal["compactionSummary"] = "compactionSummary"
+    summary: str
+    tokens_before: int
+    timestamp: int = Field(default_factory=current_timestamp_ms)
+
+
+type AgentMessage = Annotated[
+    UserMessage
+    | AssistantMessage
+    | ToolResultMessage
+    | BashExecutionMessage
+    | CustomMessage
+    | BranchSummaryMessage
+    | CompactionSummaryMessage,
+    Field(discriminator="role"),
+]
+
+
+def assistant_content(
+    text: str,
+    tool_calls: list[ToolCall] | tuple[ToolCall, ...] = (),
+) -> list[AssistantContent]:
+    """Build canonical ordered assistant blocks from parser accumulators."""
+    blocks: list[AssistantContent] = [TextContent(text=text)] if text else []
+    blocks.extend(tool_calls)
+    return blocks
+
+
+def content_text(content: str | list[Any]) -> str:
+    """Return visible text from string or text/image content."""
+    if isinstance(content, str):
+        return content
+    return "".join(block.text for block in content if isinstance(block, TextContent))
+
+
+def message_to_user(message: AgentMessage) -> UserMessage:
+    """Convert custom/session-only messages to provider-compatible user context."""
+    return UserMessage(content=message_text(message), timestamp=message.timestamp)
+
+
+def message_text(message: AgentMessage) -> str:
+    """Return the user-visible text represented by an agent message."""
+    if isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage, CustomMessage)):
+        return message.text
+    if isinstance(message, (BranchSummaryMessage, CompactionSummaryMessage)):
+        return message.summary
+    if isinstance(message, BashExecutionMessage):
+        return message.output
+    return ""
