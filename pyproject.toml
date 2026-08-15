@@ -1,0 +1,9 @@
+[project]
+name = "pico"
+version = "0.1.0"
+description = "A Python CLI coding agent inspired by Pi's modular architecture."
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]

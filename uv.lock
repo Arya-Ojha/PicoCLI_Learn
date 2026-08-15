@@ -1,0 +1,55 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[manifest]
+members = [
+    "pico",
+    "pico-ai",
+    "pico-core",
+    "pico-sdk",
+    "pico-tui",
+]
+
+[[package]]
+name = "pico"
+version = "0.1.0"
+source = { virtual = "." }
+
+[[package]]
+name = "pico-ai"
+version = "0.1.0"
+source = { editable = "packages/pico_ai" }
+
+[[package]]
+name = "pico-core"
+version = "0.1.0"
+source = { editable = "packages/pico_core" }
+dependencies = [
+    { name = "pico-ai" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pico-ai", editable = "packages/pico_ai" }]
+
+[[package]]
+name = "pico-sdk"
+version = "0.1.0"
+source = { editable = "packages/pico_sdk" }
+dependencies = [
+    { name = "pico-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pico-core", editable = "packages/pico_core" }]
+
+[[package]]
+name = "pico-tui"
+version = "0.1.0"
+source = { editable = "packages/pico_tui" }
+dependencies = [
+    { name = "pico-sdk" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pico-sdk", editable = "packages/pico_sdk" }]
