@@ -18,10 +18,14 @@ class OpenRouterProvider:
         api_key: str,
         base_url: str = "https://openrouter.ai/api/v1",
         client: httpx.AsyncClient | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url
         self._client = client
+        # Streaming LLM responses can take a while before the first token; the
+        # httpx default (5s) is far too short, so default to a generous read.
+        self._timeout = timeout or httpx.Timeout(300.0, connect=10.0)
 
     async def stream(self, request: AICallRequest) -> AsyncIterator[StreamEvent]:
         payload = self._build_payload(request)
@@ -29,7 +33,7 @@ class OpenRouterProvider:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        client = self._client or httpx.AsyncClient()
+        client = self._client or httpx.AsyncClient(timeout=self._timeout)
         pending: dict[int, dict] = {}
         try:
             async with client.stream(
