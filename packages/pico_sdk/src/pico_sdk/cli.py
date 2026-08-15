@@ -11,6 +11,7 @@ from pathlib import Path
 from pico_core.fsm import LoopEvent
 
 from .config import load_settings
+from .providers import create_provider
 from .session import AgentSession
 
 
@@ -53,9 +54,7 @@ async def run_command(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from pico_ai.openrouter import OpenRouterProvider
-
-    provider = OpenRouterProvider(api_key=api_key)
+    provider = create_provider(settings)
     if args.session:
         session = AgentSession.load(
             args.session,

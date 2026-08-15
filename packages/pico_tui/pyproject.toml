@@ -5,6 +5,9 @@ description = "Terminal user interface view."
 requires-python = ">=3.12"
 dependencies = ["pico-sdk"]
 
+[project.scripts]
+pico-chat = "pico_tui.app:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
