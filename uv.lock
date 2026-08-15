@@ -362,6 +362,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "pico-sdk" },
+    { name = "pico-tui" },
 ]
 
 [package.dev-dependencies]
@@ -372,7 +373,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pico-sdk", editable = "packages/pico_sdk" }]
+requires-dist = [
+    { name = "pico-sdk", editable = "packages/pico_sdk" },
+    { name = "pico-tui", editable = "packages/pico_tui" },
+]
 
 [package.metadata.requires-dev]
 dev = [
