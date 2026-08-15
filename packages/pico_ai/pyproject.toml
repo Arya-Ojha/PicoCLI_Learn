@@ -3,7 +3,7 @@ name = "pico-ai"
 version = "0.1.0"
 description = "LLM abstraction and protocol normalisation."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["pydantic>=2", "httpx>=0.27"]
 
 [build-system]
 requires = ["hatchling"]

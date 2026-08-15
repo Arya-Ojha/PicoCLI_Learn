@@ -3,7 +3,10 @@ name = "pico-sdk"
 version = "0.1.0"
 description = "Headless library API and extension/plugin binding."
 requires-python = ">=3.12"
-dependencies = ["pico-core"]
+dependencies = ["pico-core", "pico-ai", "pydantic>=2"]
+
+[project.scripts]
+pico = "pico_sdk.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -14,3 +17,4 @@ packages = ["src/pico_sdk"]
 
 [tool.uv.sources]
 pico-core = { workspace = true }
+pico-ai = { workspace = true }
