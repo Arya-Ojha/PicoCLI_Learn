@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 from pico_core.fsm import LoopEvent
 from pico_sdk.config import load_settings
@@ -77,14 +78,14 @@ class TUI:
         session: AgentSession,
         *,
         input_fn: Callable[[str], str] = input,
-        write: Callable[[str], None] = sys.stdout.write,
+        write: Callable[[str], Any] = sys.stdout.write,
     ) -> None:
         self.session = session
         self._input = input_fn
         self._write = write
 
     async def run(self) -> None:
-        self._write("pico — interactive coding agent. /help for commands, /quit to exit.\n")
+        self._write("pico - interactive coding agent. /help for commands, /quit to exit.\n")
         while True:
             try:
                 line = await asyncio.to_thread(self._input, "pico> ")
@@ -122,9 +123,35 @@ class TUI:
 
 
 def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="pico-chat", description="Interactive pico session."
+    )
+    parser.add_argument("--allow-bash", action="store_true", help="Permit unsandboxed bash.")
+    parser.add_argument("--model", default=None, help="Override the configured model.")
+    parser.add_argument("--cwd", default=None, help="Working directory (default: current).")
+    parser.add_argument("--session", default=None, help="Resume an existing session by id.")
+    args = parser.parse_args(argv)
+
     settings = load_settings()
+    model = args.model or settings.model
     provider = create_provider(settings)
-    session = AgentSession(provider=provider, settings=settings)
+    if args.session:
+        session = AgentSession.load(
+            args.session,
+            provider=provider,
+            model=model,
+            settings=settings,
+            working_dir=args.cwd,
+            allow_bash=args.allow_bash,
+        )
+    else:
+        session = AgentSession(
+            provider=provider,
+            model=model,
+            settings=settings,
+            working_dir=args.cwd,
+            allow_bash=args.allow_bash,
+        )
     tui = TUI(session)
     asyncio.run(tui.run())
     return 0
