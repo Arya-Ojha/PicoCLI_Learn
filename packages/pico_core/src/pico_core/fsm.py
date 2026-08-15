@@ -224,7 +224,9 @@ class AgentLoop:
                         content=payload.content,
                     )
                 )
-                last_assistant = -1
+                # Note: do NOT reset last_assistant here — a single assistant
+                # turn can make several tool calls, and every tool_request in
+                # that turn must attach to the same assistant message.
         return AICallRequest(
             system=self.system_prompt,
             messages=messages,

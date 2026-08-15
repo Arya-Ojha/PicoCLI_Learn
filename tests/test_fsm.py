@@ -169,6 +169,34 @@ async def test_auto_compaction_keeps_recent_window():
     assert any("p2" in m.content for m in last.messages)
 
 
+async def test_multiple_tool_calls_in_one_turn(tmp_path):
+    (tmp_path / "a.txt").write_text("A", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("B", encoding="utf-8")
+    provider = FakeProvider(
+        [
+            [
+                StreamEvent(kind="tool_call", tool_call=ToolCall(id="c1", name="read", arguments={"path": "a.txt"})),
+                StreamEvent(kind="tool_call", tool_call=ToolCall(id="c2", name="read", arguments={"path": "b.txt"})),
+            ],
+            [StreamEvent(kind="text", text="done")],
+        ]
+    )
+    session = Session()
+    loop = AgentLoop(provider, session, _registry(tmp_path))
+    result = await loop.run("read both")
+    assert result.state == AgentState.DONE
+
+    second = provider.calls[1]
+    tool_msgs = [m for m in second.messages if m.role == "tool"]
+    assert len(tool_msgs) == 2
+    assistants = [m for m in second.messages if m.role == "assistant" and m.tool_calls]
+    assert len(assistants) == 1
+    assert [tc.id for tc in assistants[0].tool_calls] == ["c1", "c2"]
+    # every tool result's id is covered by the assistant's tool_calls
+    ids = {tc.id for tc in assistants[0].tool_calls}
+    assert all(tm.tool_call_id in ids for tm in tool_msgs)
+
+
 async def test_bash_echo_ordering(tmp_path):
     from pico_core.tools import BashTool
 

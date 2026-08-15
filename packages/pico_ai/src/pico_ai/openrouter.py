@@ -73,6 +73,10 @@ class OpenRouterProvider:
                     }
                     for tc in m.tool_calls
                 ]
+                # An assistant turn that only made tool calls has no text;
+                # send null content rather than an empty string.
+                if not m.content:
+                    msg["content"] = None
             if m.tool_call_id is not None:
                 msg["tool_call_id"] = m.tool_call_id
             if m.name is not None:
