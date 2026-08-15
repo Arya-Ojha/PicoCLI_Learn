@@ -45,6 +45,14 @@ async def run_command(args: argparse.Namespace) -> int:
     model = args.model or settings.model
     api_key = os.environ.get(settings.api_key_env, "")
 
+    if not api_key:
+        sys.stderr.write(
+            f"error: {settings.api_key_env} is not set.\n"
+            f"Set it before running pico, e.g.:\n"
+            f'  $env:{settings.api_key_env} = "sk-or-v1-..."\n'
+        )
+        return 1
+
     from pico_ai.openrouter import OpenRouterProvider
 
     provider = OpenRouterProvider(api_key=api_key)
