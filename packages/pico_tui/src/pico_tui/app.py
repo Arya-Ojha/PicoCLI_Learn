@@ -8,16 +8,38 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from pico_core.fsm import LoopEvent
+from pico_sdk import (
+    AgentSession,
+    AssistantPayload,
+    CompactionSummaryPayload,
+    LoopEvent,
+    ToolRequestPayload,
+    ToolResultPayload,
+    UserPayload,
+)
 from pico_sdk.config import load_settings
 from pico_sdk.providers import create_provider
-from pico_sdk.session import AgentSession
+
+# ANSI escape codes (used only when color is enabled).
+_RESET = "\033[0m"
+_DIM = "\033[2m"
+_RED = "\033[31m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_CYAN = "\033[36m"
+
+
+def _paint(text: str, code: str, color: bool) -> str:
+    return f"{code}{text}{_RESET}" if color else text
+
 
 HELP = """\
 Commands:
   /help              show this help
+  /history           list session nodes (with indices for /fork)
   /compact [text]    summarise older turns (optionally with steering text)
-  /fork <node-id>    rewind to an earlier node and start a new branch
+  /fork <index|id>   rewind to a node and start a new branch
+  /undo              rewind to the previous user turn
   /quit              save and exit
 Anything else is sent to the agent as a prompt.\
 """
@@ -27,7 +49,7 @@ Anything else is sent to the agent as a prompt.\
 class Command:
     """A slash command parsed from a line of input."""
 
-    kind: str  # "compact" | "fork" | "help" | "quit"
+    kind: str  # "compact" | "fork" | "help" | "history" | "undo" | "quit"
     arg: str = ""
 
 
@@ -45,6 +67,10 @@ def parse_line(line: str) -> Command | Prompt:
         return Command("quit")
     if line in ("/help", "/h", "/?"):
         return Command("help")
+    if line in ("/history", "/nodes"):
+        return Command("history")
+    if line in ("/undo", "/back"):
+        return Command("undo")
     if line.startswith("/compact"):
         return Command("compact", line[len("/compact") :].strip())
     if line.startswith("/fork"):
@@ -52,21 +78,47 @@ def parse_line(line: str) -> Command | Prompt:
     return Prompt(line)
 
 
-def render_event(event: LoopEvent) -> str:
+def _truncate(text: str, limit: int = 200) -> str:
+    """Collapse whitespace and truncate long tool output for display."""
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _snippet(payload: Any) -> str:
+    """Return a short, human-readable summary of a node payload."""
+    if isinstance(payload, UserPayload):
+        return payload.content
+    if isinstance(payload, AssistantPayload):
+        return payload.text
+    if isinstance(payload, ToolRequestPayload):
+        return f"{payload.tool_call.name} {payload.tool_call.arguments}"
+    if isinstance(payload, ToolResultPayload):
+        return payload.content
+    if isinstance(payload, CompactionSummaryPayload):
+        return payload.summary
+    return ""
+
+
+def render_event(event: LoopEvent, color: bool = False) -> str:
     """Render a loop event for the terminal; empty string means no output."""
     if event.kind == "text":
         return event.text
     if event.kind == "thinking":
-        return ""
+        return _paint(event.thinking, _DIM, color)
     if event.kind == "tool_request" and event.tool_request is not None:
         call = event.tool_request.tool_call
         if call.name == "bash":
-            return "$ " + call.arguments.get("command", "") + "\n"
-        return f"[{call.name}] {call.arguments}\n"
+            return _paint("$ " + call.arguments.get("command", "") + "\n", _GREEN, color)
+        return _paint(f"[{call.name}] {call.arguments}\n", _CYAN, color)
     if event.kind == "tool_result" and event.tool_result is not None:
-        if event.tool_result.name == "bash":
-            return event.tool_result.content.rstrip() + "\n"
-        return ""
+        result = event.tool_result
+        if result.name == "bash":
+            return _paint(result.content.rstrip() + "\n", _DIM, color)
+        snippet = _truncate(result.content)
+        return _paint(f"  -> {snippet}\n", _DIM, color)
+    if event.kind == "usage" and event.usage is not None:
+        u = event.usage
+        return _paint(f"  ({u.input_tokens} in, {u.output_tokens} out)\n", _DIM, color)
     return ""
 
 
@@ -79,13 +131,21 @@ class TUI:
         *,
         input_fn: Callable[[str], str] = input,
         write: Callable[[str], Any] = sys.stdout.write,
+        color: bool = True,
     ) -> None:
         self.session = session
         self._input = input_fn
         self._write = write
+        self._color = color
 
     async def run(self) -> None:
-        self._write("pico - interactive coding agent. /help for commands, /quit to exit.\n")
+        self._write(
+            _paint(
+                f"pico - model={self.session.model}. /help for commands, /quit to exit.\n",
+                _CYAN,
+                self._color,
+            )
+        )
         while True:
             try:
                 line = await asyncio.to_thread(self._input, "pico> ")
@@ -98,6 +158,12 @@ class TUI:
                 if parsed.kind == "help":
                     self._write(HELP + "\n")
                     continue
+                if parsed.kind == "history":
+                    self._history()
+                    continue
+                if parsed.kind == "undo":
+                    self._undo()
+                    continue
                 if parsed.kind == "compact":
                     await self.session.compact(parsed.arg)
                     self._write("compacted context\n")
@@ -107,17 +173,44 @@ class TUI:
                     continue
                 continue
             async for event in self.session.stream(parsed.text):
-                self._write(render_event(event))
+                self._write(render_event(event, color=self._color))
             self._write("\n")
         self.session.save()
 
+    def _history(self) -> None:
+        branch = self.session.session.active_branch()
+        if not branch:
+            self._write("(empty session)\n")
+            return
+        for i, node in enumerate(branch):
+            marker = ">" if node.id == self.session.session.active_leaf_id else " "
+            self._write(f"{marker} [{i}] {node.payload.kind}: {_truncate(_snippet(node.payload), 80)}\n")
+
+    def _undo(self) -> None:
+        branch = self.session.session.active_branch()
+        users = [n for n in branch if isinstance(n.payload, UserPayload)]
+        if len(users) < 2:
+            self._write("nothing to undo\n")
+            return
+        target = users[-2]
+        self.session.fork(target.id)
+        self._write(f"rewound to user turn [{branch.index(target)}]\n")
+
     def _fork(self, arg: str) -> None:
         if not arg:
-            self._write("usage: /fork <node-id>\n")
+            self._write("usage: /fork <index-or-node-id>\n")
             return
+        node_id = arg
+        if arg.isdigit():
+            branch = self.session.session.active_branch()
+            idx = int(arg)
+            if not (0 <= idx < len(branch)):
+                self._write(f"error: no node at index {arg}\n")
+                return
+            node_id = branch[idx].id
         try:
-            self.session.fork(arg)
-            self._write(f"forked to {arg}\n")
+            self.session.fork(node_id)
+            self._write(f"forked to {node_id}\n")
         except KeyError:
             self._write(f"error: unknown node id: {arg}\n")
 
@@ -130,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=None, help="Override the configured model.")
     parser.add_argument("--cwd", default=None, help="Working directory (default: current).")
     parser.add_argument("--session", default=None, help="Resume an existing session by id.")
+    parser.add_argument("--no-color", action="store_true", help="Disable colored output.")
     args = parser.parse_args(argv)
 
     settings = load_settings()
@@ -152,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
             working_dir=args.cwd,
             allow_bash=args.allow_bash,
         )
-    tui = TUI(session)
+    tui = TUI(session, color=not args.no_color)
     asyncio.run(tui.run())
     return 0
 

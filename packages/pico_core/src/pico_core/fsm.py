@@ -47,7 +47,7 @@ class LoopEvent(BaseModel):
     """A single observable event emitted by the agent loop."""
 
     kind: Literal[
-        "text", "thinking", "tool_call", "tool_request", "tool_result", "state"
+        "text", "thinking", "tool_call", "tool_request", "tool_result", "state", "usage"
     ]
     text: str = ""
     thinking: str = ""
@@ -55,6 +55,7 @@ class LoopEvent(BaseModel):
     tool_request: ToolRequestPayload | None = None
     tool_result: ToolResultPayload | None = None
     state: AgentState | None = None
+    usage: Usage | None = None
 
 
 class RunResult(BaseModel):
@@ -176,6 +177,8 @@ class AgentLoop:
                 self.session.active_leaf_id,
                 AssistantPayload(blocks=blocks, usage=usage),
             )
+            if usage is not None:
+                yield LoopEvent(kind="usage", usage=usage)
 
             if not tool_calls:
                 self._set_state(AgentState.DONE)
