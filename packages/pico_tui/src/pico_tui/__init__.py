@@ -1,6 +1,8 @@
-"""pico_tui: the terminal user interface view."""
+"""pico_tui: Textual-based interactive terminal UI for pico."""
 
-from .app import TUI, Command, Prompt, parse_line, render_event
+from .commands import Command, Prompt, parse_line
+from .render import render_event
 
-__all__ = ["TUI", "Command", "Prompt", "parse_line", "render_event"]
+__all__ = ["Command", "Prompt", "parse_line", "render_event"]
+
 

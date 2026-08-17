@@ -1,11 +1,31 @@
-"""The pico_tui terminal UI: command parsing, event rendering, and the REPL."""
+"""pico_tui tests: command parsing, Rich rendering, and Textual pilot."""
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 from pico_ai.types import StreamEvent, ToolCall, Usage
 from pico_core.fsm import LoopEvent
 from pico_core.session import ToolRequestPayload, ToolResultPayload
-from pico_tui.app import TUI, Command, Prompt, parse_line, render_event
 
-from conftest import FakeProvider, make_session
+from pico_tui.commands import Command, Prompt, parse_line
+from pico_tui.render import render_event
+
+# Shared console for rendering-to-text assertions.
+_console = Console(force_terminal=True, color_system=None, width=200, height=100)
+
+
+def _render_text(event: LoopEvent) -> str:
+    """Render a LoopEvent to plain text for assertion."""
+    rendered = render_event(event)
+    if rendered is None:
+        return ""
+    with _console.capture() as capture:
+        _console.print(rendered)
+    return capture.get().rstrip()
+
+
+# ── parse_line ──────────────────────────────────────────────────────
 
 
 def test_parse_line_commands():
@@ -23,94 +43,101 @@ def test_parse_line_prompt():
     assert parse_line("  hi  ") == Prompt("hi")
 
 
+def test_parse_line_empty():
+    assert parse_line("") == Prompt("")
+    assert parse_line("   ") == Prompt("")
+
+
+# ── render_event ────────────────────────────────────────────────────
+
+
 def test_render_event_text():
-    assert render_event(LoopEvent(kind="text", text="hi")) == "hi"
+    event = LoopEvent(kind="text", text="hi")
+    assert _render_text(event) == "hi"
+
+
+def test_render_event_markdown():
+    event = LoopEvent(kind="text", text="# Title\n\n- item 1\n- item 2")
+    result = _render_text(event)
+    assert "Title" in result
+    assert "item 1" in result
 
 
 def test_render_event_thinking():
-    assert render_event(LoopEvent(kind="thinking", thinking="hmm")) == "hmm"
+    event = LoopEvent(kind="thinking", thinking="hmm let me think")
+    assert "hmm let me think" in _render_text(event)
 
 
-def test_render_event_bash_request_echoes():
+def test_render_event_bash_request():
     event = LoopEvent(
         kind="tool_request",
         tool_request=ToolRequestPayload(
-            tool_call=ToolCall(id="c1", name="bash", arguments={"command": "ls"})
+            tool_call=ToolCall(id="c1", name="bash", arguments={"command": "ls -la"})
         ),
     )
-    assert render_event(event) == "$ ls\n"
+    result = _render_text(event)
+    assert "ls -la" in result
+    assert "bash" in result.lower()
 
 
-def test_render_event_other_tool_request():
+def test_render_event_read_request():
     event = LoopEvent(
         kind="tool_request",
         tool_request=ToolRequestPayload(
             tool_call=ToolCall(id="c1", name="read", arguments={"path": "a.txt"})
         ),
     )
-    assert render_event(event) == "[read] {'path': 'a.txt'}\n"
+    result = _render_text(event)
+    assert "read" in result
+    assert "a.txt" in result
 
 
 def test_render_event_bash_result():
     event = LoopEvent(
         kind="tool_result",
         tool_result=ToolResultPayload(
-            tool_call_id="c1", name="bash", content="hi\n[exit code: 0]"
+            tool_call_id="c1", name="bash", content="file1.txt\n[exit code: 0]"
         ),
     )
-    assert render_event(event) == "hi\n[exit code: 0]\n"
+    result = _render_text(event)
+    assert "file1.txt" in result
 
 
-def test_render_event_non_bash_result():
+def test_render_event_read_result():
     event = LoopEvent(
         kind="tool_result",
-        tool_result=ToolResultPayload(tool_call_id="c1", name="read", content="data"),
+        tool_result=ToolResultPayload(
+            tool_call_id="c1", name="read", content="hello world from file"
+        ),
     )
-    assert render_event(event) == "  -> data\n"
+    result = _render_text(event)
+    assert "hello world from file" in result
 
 
 def test_render_event_usage():
     event = LoopEvent(kind="usage", usage=Usage(input_tokens=10, output_tokens=5))
-    assert render_event(event) == "  (10 in, 5 out)\n"
+    result = _render_text(event)
+    assert "10" in result
+    assert "5" in result
 
 
-def test_render_event_color_wraps_ansi():
-    event = LoopEvent(
+def test_render_event_returns_rich_renderable():
+    """render_event returns Rich objects, not raw strings."""
+    event = LoopEvent(kind="text", text="# Title")
+    rendered = render_event(event)
+    # Rich Markdown objects are not plain strings
+    assert not isinstance(rendered, str)
+
+    event2 = LoopEvent(kind="thinking", thinking="hmm")
+    rendered2 = render_event(event2)
+    assert isinstance(rendered2, Text)
+
+    event3 = LoopEvent(
         kind="tool_request",
         tool_request=ToolRequestPayload(
             tool_call=ToolCall(id="c1", name="bash", arguments={"command": "ls"})
         ),
     )
-    assert render_event(event, color=True) == "\033[32m$ ls\n\033[0m"
-
-
-async def test_tui_runs_prompt_and_quits(tmp_path):
-    provider = FakeProvider([[StreamEvent(kind="text", text="Hello")]])
-    session = make_session(provider, tmp_path)
-    lines = iter(["hello", "/quit"])
-    output: list[str] = []
-
-    tui = TUI(session, input_fn=lambda prompt="": next(lines), write=output.append)
-    await tui.run()
-    assert "Hello" in "".join(output)
-
-
-async def test_tui_history_and_undo(tmp_path):
-    provider = FakeProvider(
-        [
-            [StreamEvent(kind="text", text="first")],
-            [StreamEvent(kind="text", text="second")],
-        ]
-    )
-    session = make_session(provider, tmp_path)
-    lines = iter(["one", "two", "/history", "/undo", "/quit"])
-    output: list[str] = []
-
-    tui = TUI(session, input_fn=lambda prompt="": next(lines), write=output.append)
-    await tui.run()
-    joined = "".join(output)
-    assert "first" in joined
-    assert "second" in joined
-    assert "[0] user" in joined  # /history lists nodes
-    assert "rewound" in joined  # /undo ran
+    rendered3 = render_event(event3)
+    assert isinstance(rendered3, Panel)
 

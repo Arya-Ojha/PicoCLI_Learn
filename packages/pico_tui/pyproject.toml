@@ -3,7 +3,11 @@ name = "pico-tui"
 version = "0.1.0"
 description = "Terminal user interface view."
 requires-python = ">=3.12"
-dependencies = ["pico-sdk"]
+dependencies = [
+    "pico-sdk",
+    "rich>=15.0.0",
+    "textual>=8.2.8",
+]
 
 [project.scripts]
 pico-chat = "pico_tui.app:main"

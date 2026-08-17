@@ -1,18 +1,24 @@
-"""The interactive terminal UI (REPL) for pico."""
+"""Textual-based interactive terminal UI for pico."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import sys
-from dataclasses import dataclass
-from typing import Any, Callable
+
+from collections.abc import Callable
+
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
+from textual.app import App, ComposeResult
+from textual.widgets import Footer, Header, Input, RichLog
 
 from pico_sdk import (
     AgentSession,
     AssistantPayload,
     CompactionSummaryPayload,
-    LoopEvent,
     ToolRequestPayload,
     ToolResultPayload,
     UserPayload,
@@ -20,71 +26,22 @@ from pico_sdk import (
 from pico_sdk.config import load_settings
 from pico_sdk.providers import create_provider
 
-# ANSI escape codes (used only when color is enabled).
-_RESET = "\033[0m"
-_DIM = "\033[2m"
-_RED = "\033[31m"
-_GREEN = "\033[32m"
-_YELLOW = "\033[33m"
-_CYAN = "\033[36m"
+from .commands import Command, Prompt, parse_line
+from .render import _truncate, render_event
 
-
-def _paint(text: str, code: str, color: bool) -> str:
-    return f"{code}{text}{_RESET}" if color else text
-
-
-HELP = """\
-Commands:
-  /help              show this help
-  /history           list session nodes (with indices for /fork)
-  /compact [text]    summarise older turns (optionally with steering text)
-  /fork <index|id>   rewind to a node and start a new branch
-  /undo              rewind to the previous user turn
-  /quit              save and exit
+HELP_TEXT = """\
+[bold]Commands (slash or key binding):[/]
+  [cyan]/help, F1[/]        show this help
+  [cyan]/history, Ctrl+H[/] list session nodes (with indices for /fork)
+  [cyan]/compact, Ctrl+K[/] summarise older turns (optionally with steering text)
+  [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
+  [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
+  [cyan]/quit, Ctrl+Q[/]    save and exit
 Anything else is sent to the agent as a prompt.\
 """
 
 
-@dataclass
-class Command:
-    """A slash command parsed from a line of input."""
-
-    kind: str  # "compact" | "fork" | "help" | "history" | "undo" | "quit"
-    arg: str = ""
-
-
-@dataclass
-class Prompt:
-    """A plain prompt to send to the agent."""
-
-    text: str
-
-
-def parse_line(line: str) -> Command | Prompt:
-    """Parse a line of input into a command or a prompt."""
-    line = line.strip()
-    if line in ("/quit", "/exit", "/q"):
-        return Command("quit")
-    if line in ("/help", "/h", "/?"):
-        return Command("help")
-    if line in ("/history", "/nodes"):
-        return Command("history")
-    if line in ("/undo", "/back"):
-        return Command("undo")
-    if line.startswith("/compact"):
-        return Command("compact", line[len("/compact") :].strip())
-    if line.startswith("/fork"):
-        return Command("fork", line[len("/fork") :].strip())
-    return Prompt(line)
-
-
-def _truncate(text: str, limit: int = 200) -> str:
-    """Collapse whitespace and truncate long tool output for display."""
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[:limit] + "..."
-
-
-def _snippet(payload: Any) -> str:
+def _snippet(payload: object) -> str:
     """Return a short, human-readable summary of a node payload."""
     if isinstance(payload, UserPayload):
         return payload.content
@@ -99,131 +56,225 @@ def _snippet(payload: Any) -> str:
     return ""
 
 
-def render_event(event: LoopEvent, color: bool = False) -> str:
-    """Render a loop event for the terminal; empty string means no output."""
-    if event.kind == "text":
-        return event.text
-    if event.kind == "thinking":
-        return _paint(event.thinking, _DIM, color)
-    if event.kind == "tool_request" and event.tool_request is not None:
-        call = event.tool_request.tool_call
-        if call.name == "bash":
-            return _paint("$ " + call.arguments.get("command", "") + "\n", _GREEN, color)
-        return _paint(f"[{call.name}] {call.arguments}\n", _CYAN, color)
-    if event.kind == "tool_result" and event.tool_result is not None:
-        result = event.tool_result
-        if result.name == "bash":
-            return _paint(result.content.rstrip() + "\n", _DIM, color)
-        snippet = _truncate(result.content)
-        return _paint(f"  -> {snippet}\n", _DIM, color)
-    if event.kind == "usage" and event.usage is not None:
-        u = event.usage
-        return _paint(f"  ({u.input_tokens} in, {u.output_tokens} out)\n", _DIM, color)
-    return ""
+class _SessionManager:
+    """Holds the AgentSession and provides command methods called by the app."""
 
-
-class TUI:
-    """An interactive, streaming terminal session."""
-
-    def __init__(
-        self,
-        session: AgentSession,
-        *,
-        input_fn: Callable[[str], str] = input,
-        write: Callable[[str], Any] = sys.stdout.write,
-        color: bool = True,
-    ) -> None:
+    def __init__(self, session: AgentSession) -> None:
         self.session = session
-        self._input = input_fn
-        self._write = write
-        self._color = color
 
-    async def run(self) -> None:
-        self._write(
-            _paint(
-                f"pico - model={self.session.model}. /help for commands, /quit to exit.\n",
-                _CYAN,
-                self._color,
-            )
-        )
-        while True:
-            try:
-                line = await asyncio.to_thread(self._input, "pico> ")
-            except (EOFError, KeyboardInterrupt):
-                line = "/quit"
-            parsed = parse_line(line)
-            if isinstance(parsed, Command):
-                if parsed.kind == "quit":
-                    break
-                if parsed.kind == "help":
-                    self._write(HELP + "\n")
-                    continue
-                if parsed.kind == "history":
-                    self._history()
-                    continue
-                if parsed.kind == "undo":
-                    self._undo()
-                    continue
-                if parsed.kind == "compact":
-                    await self.session.compact(parsed.arg)
-                    self._write("compacted context\n")
-                    continue
-                if parsed.kind == "fork":
-                    self._fork(parsed.arg)
-                    continue
-                continue
-            async for event in self.session.stream(parsed.text):
-                self._write(render_event(event, color=self._color))
-            self._write("\n")
-        self.session.save()
+    async def stream(
+        self, prompt: str, on_event: Callable[[object], None]
+    ) -> None:
+        """Consume the agent stream, calling on_event for each LoopEvent."""
+        async for event in self.session.stream(prompt):
+            rendered = render_event(event)
+            if rendered is not None:
+                on_event(rendered)
 
-    def _history(self) -> None:
+    def history_text(self) -> Table | None:
+        """Return a Rich Table of nodes, or None if session is empty."""
         branch = self.session.session.active_branch()
         if not branch:
-            self._write("(empty session)\n")
-            return
+            return None
+        table = Table(box=None, show_header=False, padding=(0, 1))
+        table.add_column("", width=2)
+        table.add_column("#", width=5, justify="right")
+        table.add_column("kind", width=12)
+        table.add_column("summary")
         for i, node in enumerate(branch):
-            marker = ">" if node.id == self.session.session.active_leaf_id else " "
-            self._write(f"{marker} [{i}] {node.payload.kind}: {_truncate(_snippet(node.payload), 80)}\n")
+            marker = "\u25b6" if node.id == self.session.session.active_leaf_id else ""
+            table.add_row(
+                marker,
+                str(i),
+                node.payload.kind,
+                _truncate(_snippet(node.payload), 80),
+            )
+        return table
 
-    def _undo(self) -> None:
+    def undo(self) -> str | None:
+        """Return a message or None."""
         branch = self.session.session.active_branch()
         users = [n for n in branch if isinstance(n.payload, UserPayload)]
         if len(users) < 2:
-            self._write("nothing to undo\n")
-            return
+            return "nothing to undo"
         target = users[-2]
         self.session.fork(target.id)
-        self._write(f"rewound to user turn [{branch.index(target)}]\n")
+        return f"rewound to user turn [{branch.index(target)}]"
 
-    def _fork(self, arg: str) -> None:
-        if not arg:
-            self._write("usage: /fork <index-or-node-id>\n")
-            return
+    async def compact(self, arg: str) -> str:
+        await self.session.compact(arg)
+        return "compacted context"
+
+    def fork(self, arg: str) -> str:
+        branch = self.session.session.active_branch()
         node_id = arg
         if arg.isdigit():
-            branch = self.session.session.active_branch()
             idx = int(arg)
             if not (0 <= idx < len(branch)):
-                self._write(f"error: no node at index {arg}\n")
-                return
+                return f"error: no node at index {arg}"
             node_id = branch[idx].id
         try:
             self.session.fork(node_id)
-            self._write(f"forked to {node_id}\n")
+            return f"forked to {node_id}"
         except KeyError:
-            self._write(f"error: unknown node id: {arg}\n")
+            return f"error: unknown node id: {arg}"
+
+
+
+class PicoApp(App[None]):
+    """The pico interactive agent TUI."""
+
+    CSS = """
+    #chat-log {
+        height: 1fr;
+        border: none;
+    }
+    #chat-log:focus {
+        border: none;
+    }
+    #input-bar {
+        dock: bottom;
+        margin: 0 1 1 1;
+    }
+    """
+
+    BINDINGS = [
+        ("ctrl+q", "quit_app", "Quit"),
+        ("ctrl+h", "show_history", "History"),
+        ("ctrl+z", "undo", "Undo"),
+        ("ctrl+k", "compact", "Compact"),
+        ("f1", "show_help", "Help"),
+    ]
+
+    def __init__(self, mgr: _SessionManager) -> None:
+        super().__init__()
+        self._mgr = mgr
+        self._streaming = False
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield RichLog(id="chat-log", highlight=True, markup=True, wrap=True)
+        yield Input(
+            id="input-bar",
+            placeholder="pico>  (type a prompt, or /help for commands)",
+        )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Focus the input bar on start."""
+        self.query_one("#input-bar", Input).focus()
+
+    # -- input handling --
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle a line submitted in the input bar."""
+        input_widget = self.query_one("#input-bar", Input)
+        input_widget.clear()
+
+        if self._streaming:
+            self._write_chat(
+                Text("(still streaming - please wait)", style="dim italic")
+            )
+            return
+
+        parsed = parse_line(event.value)
+        if isinstance(parsed, Command):
+            await self._dispatch_command(parsed)
+        elif parsed.text:  # non-empty prompt
+            await self._run_prompt(parsed.text)
+
+    # -- command dispatch --
+
+    async def _dispatch_command(self, cmd: Command) -> None:
+        if cmd.kind == "quit":
+            self._mgr.session.save()
+            self.exit()
+        elif cmd.kind == "help":
+            self._write_chat(Panel(HELP_TEXT, title="Help"))
+        elif cmd.kind == "history":
+            hist = self._mgr.history_text()
+            if hist is None:
+                self._write_chat(Text("(empty session)", style="dim"))
+            else:
+                self._write_chat(hist)
+        elif cmd.kind == "undo":
+            msg = self._mgr.undo()
+            self._write_chat(Text(msg or "(undo)", style="dim"))
+        elif cmd.kind == "compact":
+            msg = await self._mgr.compact(cmd.arg)
+            self._write_chat(Text(msg, style="dim"))
+        elif cmd.kind == "fork":
+            msg = self._mgr.fork(cmd.arg)
+            self._write_chat(Text(msg, style="dim"))
+
+    # -- prompt to agent streaming --
+
+    async def _run_prompt(self, text: str) -> None:
+        """Send a user prompt to the agent and stream the response."""
+        self._write_chat(Text(f"> {text}", style="bold"))
+        self._streaming = True
+        asyncio.create_task(self._stream_worker(text))
+
+    async def _stream_worker(self, prompt: str) -> None:
+        """Background task that consumes the agent stream."""
+        try:
+            chat_log = self.query_one("#chat-log", RichLog)
+
+            def _write(renderable: object) -> None:
+                chat_log.write(renderable)
+
+            await self._mgr.stream(prompt, _write)
+        except Exception as exc:
+            chat_log = self.query_one("#chat-log", RichLog)
+            chat_log.write(
+                Panel(str(exc), title="error", border_style="red")
+            )
+        finally:
+            self._streaming = False
+
+    # -- helpers --
+
+    def _write_chat(self, renderable: object) -> None:
+        self.query_one("#chat-log", RichLog).write(renderable)
+
+    # -- key binding actions --
+
+    async def action_quit_app(self) -> None:
+        self._mgr.session.save()
+        self.exit()
+
+    async def action_show_history(self) -> None:
+        await self._dispatch_command(Command("history"))
+
+    async def action_undo(self) -> None:
+        await self._dispatch_command(Command("undo"))
+
+    async def action_compact(self) -> None:
+        await self._dispatch_command(Command("compact", ""))
+
+    async def action_show_help(self) -> None:
+        await self._dispatch_command(Command("help"))
+
+
+# -- CLI entry point --
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="pico-chat", description="Interactive pico session."
+        prog="pico-chat", description="Interactive pico session (Textual TUI)."
     )
-    parser.add_argument("--allow-bash", action="store_true", help="Permit unsandboxed bash.")
-    parser.add_argument("--model", default=None, help="Override the configured model.")
-    parser.add_argument("--cwd", default=None, help="Working directory (default: current).")
-    parser.add_argument("--session", default=None, help="Resume an existing session by id.")
-    parser.add_argument("--no-color", action="store_true", help="Disable colored output.")
+    parser.add_argument(
+        "--allow-bash", action="store_true", help="Permit unsandboxed bash."
+    )
+    parser.add_argument(
+        "--model", default=None, help="Override the configured model."
+    )
+    parser.add_argument(
+        "--cwd", default=None, help="Working directory (default: current)."
+    )
+    parser.add_argument(
+        "--session", default=None, help="Resume an existing session by id."
+    )
     args = parser.parse_args(argv)
 
     settings = load_settings()
@@ -246,8 +297,9 @@ def main(argv: list[str] | None = None) -> int:
             working_dir=args.cwd,
             allow_bash=args.allow_bash,
         )
-    tui = TUI(session, color=not args.no_color)
-    asyncio.run(tui.run())
+    mgr = _SessionManager(session)
+    app = PicoApp(mgr)
+    app.run()
     return 0
 
 
