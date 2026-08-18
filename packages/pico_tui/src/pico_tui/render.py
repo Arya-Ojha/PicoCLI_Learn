@@ -8,6 +8,14 @@ from rich.text import Text
 
 from pico_sdk import LoopEvent
 
+# Distinct heading colors per tool type.
+_TOOL_COLORS: dict[str, str] = {
+    "bash": "green",
+    "read": "bright_blue",
+    "write": "yellow",
+    "edit": "magenta",
+}
+
 
 def _truncate(text: str, limit: int = 200) -> str:
     """Collapse whitespace and truncate long tool output."""
@@ -21,34 +29,45 @@ def render_event(event: LoopEvent):  # -> RenderableType (kept loose for mypy si
     Returns None when the event should produce no visible output.
     """
     if event.kind == "text":
-        return Markdown(event.text) if _looks_like_markdown(event.text) else Text(event.text)
+        return (
+            Markdown(event.text)
+            if _looks_like_markdown(event.text)
+            else Text(event.text)
+        )
     if event.kind == "thinking":
         return Text(event.thinking, style="dim italic")
     if event.kind == "tool_request" and event.tool_request is not None:
         call = event.tool_request.tool_call
+        color = _TOOL_COLORS.get(call.name, "cyan")
         if call.name == "bash":
             cmd = call.arguments.get("command", "")
-            return Panel(cmd, title="bash", border_style="green", title_align="left")
+            return Panel(
+                cmd,
+                title=f"[bold {color}]{call.name}[/]",
+                border_style=color,
+                title_align="left",
+            )
         return Panel(
             str(call.arguments),
-            title=f"[bold cyan]{call.name}[/]",
-            border_style="cyan",
+            title=f"[bold {color}]{call.name}[/]",
+            border_style=color,
             title_align="left",
         )
     if event.kind == "tool_result" and event.tool_result is not None:
         result = event.tool_result
+        color = _TOOL_COLORS.get(result.name, "dim cyan")
         if result.name == "bash":
             return Panel(
                 result.content.rstrip(),
-                title="bash result",
-                border_style="dim green",
+                title=f"[{color}]{result.name} result[/]",
+                border_style=color,
                 title_align="left",
             )
         snippet = _truncate(result.content)
         return Panel(
             snippet,
-            title=f"[dim]{result.name} result[/]",
-            border_style="dim",
+            title=f"[{color}]{result.name} result[/]",
+            border_style=color,
             title_align="left",
         )
     if event.kind == "usage" and event.usage is not None:

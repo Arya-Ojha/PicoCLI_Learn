@@ -75,9 +75,9 @@ def test_render_event_bash_request():
             tool_call=ToolCall(id="c1", name="bash", arguments={"command": "ls -la"})
         ),
     )
-    result = _render_text(event)
-    assert "ls -la" in result
-    assert "bash" in result.lower()
+    rendered = render_event(event)
+    assert isinstance(rendered, Panel)
+    assert rendered.border_style == "green"
 
 
 def test_render_event_read_request():
@@ -87,9 +87,33 @@ def test_render_event_read_request():
             tool_call=ToolCall(id="c1", name="read", arguments={"path": "a.txt"})
         ),
     )
-    result = _render_text(event)
-    assert "read" in result
-    assert "a.txt" in result
+    rendered = render_event(event)
+    assert isinstance(rendered, Panel)
+    assert rendered.border_style == "bright_blue"
+
+
+def test_render_event_write_request():
+    event = LoopEvent(
+        kind="tool_request",
+        tool_request=ToolRequestPayload(
+            tool_call=ToolCall(id="c1", name="write", arguments={"path": "b.txt", "content": "x"})
+        ),
+    )
+    rendered = render_event(event)
+    assert isinstance(rendered, Panel)
+    assert rendered.border_style == "yellow"
+
+
+def test_render_event_unknown_tool_uses_cyan():
+    event = LoopEvent(
+        kind="tool_request",
+        tool_request=ToolRequestPayload(
+            tool_call=ToolCall(id="c1", name="unknown_tool", arguments={})
+        ),
+    )
+    rendered = render_event(event)
+    assert isinstance(rendered, Panel)
+    assert rendered.border_style == "cyan"
 
 
 def test_render_event_bash_result():
