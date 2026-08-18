@@ -65,11 +65,28 @@ class _SessionManager:
     async def stream(
         self, prompt: str, on_event: Callable[[object], None]
     ) -> None:
-        """Consume the agent stream, calling on_event for each LoopEvent."""
+        """Consume the agent stream, calling on_event for each LoopEvent.
+
+        Text chunks are buffered together and flushed as a single Text
+        renderable when a non-text event arrives (or the stream ends),
+        avoiding one-chunk-per-line output in RichLog.
+        """
+        text_buffer: list[str] = []
+
+        def _flush() -> None:
+            if text_buffer:
+                on_event(Text("".join(text_buffer)))
+                text_buffer.clear()
+
         async for event in self.session.stream(prompt):
-            rendered = render_event(event)
-            if rendered is not None:
-                on_event(rendered)
+            if event.kind == "text":
+                text_buffer.append(event.text)
+            else:
+                _flush()
+                rendered = render_event(event)
+                if rendered is not None:
+                    on_event(rendered)
+        _flush()
 
     def history_text(self) -> Table | None:
         """Return a Rich Table of nodes, or None if session is empty."""
