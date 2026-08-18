@@ -28,6 +28,10 @@ def _render_text(event: LoopEvent) -> str:
 # ── parse_line ──────────────────────────────────────────────────────
 
 
+def test_parse_line_model():
+    assert parse_line("/model openai/gpt-4o") == Command("model", "openai/gpt-4o")
+
+
 def test_parse_line_commands():
     assert parse_line("/quit") == Command("quit")
     assert parse_line("/exit") == Command("quit")

@@ -34,6 +34,7 @@ HELP_TEXT = """\
   [cyan]/help, F1[/]        show this help
   [cyan]/history, Ctrl+H[/] list session nodes (with indices for /fork)
   [cyan]/compact, Ctrl+K[/] summarise older turns (optionally with steering text)
+  [cyan]/model <name>[/]   change the LLM model for this session
   [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
   [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
   [cyan]/quit, Ctrl+Q[/]    save and exit
@@ -121,6 +122,13 @@ class _SessionManager:
     async def compact(self, arg: str) -> str:
         await self.session.compact(arg)
         return "compacted context"
+
+    def model(self, arg: str) -> str:
+        if not arg:
+            return f"current model: {self.session.model}"
+        self.session.model = arg
+        self.session.loop.model = arg
+        return f"switched to model: {arg}"
 
     def fork(self, arg: str) -> str:
         branch = self.session.session.active_branch()
@@ -219,6 +227,9 @@ class PicoApp(App[None]):
             self._write_chat(Text(msg or "(undo)", style="dim"))
         elif cmd.kind == "compact":
             msg = await self._mgr.compact(cmd.arg)
+            self._write_chat(Text(msg, style="dim"))
+        elif cmd.kind == "model":
+            msg = self._mgr.model(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
         elif cmd.kind == "fork":
             msg = self._mgr.fork(cmd.arg)

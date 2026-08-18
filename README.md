@@ -65,7 +65,7 @@ Create `~/.pico/settings.json` to override defaults:
 
 ```json
 {
-  "model": "openrouter/auto",
+  "model": "nvidia/nemotron-3.5-lightning:free",
   "context_window": 128000,
   "reserve_tokens": 16384,
   "session_dir": "~/.pico/sessions",
