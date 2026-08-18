@@ -68,20 +68,26 @@ class _SessionManager:
     ) -> None:
         """Consume the agent stream, calling on_event for each LoopEvent.
 
-        Text chunks are buffered together and flushed as a single Text
-        renderable when a non-text event arrives (or the stream ends),
+        Text and thinking chunks are buffered separately and flushed as single
+        Text renderables when a non-streaming event arrives (or the stream ends),
         avoiding one-chunk-per-line output in RichLog.
         """
         text_buffer: list[str] = []
+        thinking_buffer: list[str] = []
 
         def _flush() -> None:
             if text_buffer:
                 on_event(Text("".join(text_buffer)))
                 text_buffer.clear()
+            if thinking_buffer:
+                on_event(Text("".join(thinking_buffer), style="dim italic"))
+                thinking_buffer.clear()
 
         async for event in self.session.stream(prompt):
             if event.kind == "text":
                 text_buffer.append(event.text)
+            elif event.kind == "thinking":
+                thinking_buffer.append(event.thinking)
             else:
                 _flush()
                 rendered = render_event(event)
