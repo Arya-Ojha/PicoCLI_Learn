@@ -103,7 +103,7 @@ Flags for `pico run`:
 ### Interactive TUI
 
 ```bash
-uv run pico-chat --model openai/gpt-4o-mini --allow-bash
+uv run pico-chat --allow-bash
 ```
 
 `pico-chat` shares the same flags. Inside the prompt you can type a message or use:
