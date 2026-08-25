@@ -82,8 +82,8 @@ Create `~/.pico/settings.json` to override defaults:
 # complete a task in one shot
 uv run pico run "explain what this repo does"
 
-# let the agent run shell commands
-uv run pico run "run the tests and fix failures" --allow-bash
+# let the agent run shell commands (bash is on by default)
+uv run pico run "run the tests and fix failures"
 
 # work in another directory, pick a model
 uv run pico run "summarize this code" --cwd D:\some\repo --model openai/gpt-4o-mini
@@ -96,7 +96,7 @@ Flags for `pico run`:
 
 | Flag | Purpose |
 |---|---|
-| `--allow-bash` | Opt in to unsandboxed bash execution (off by default) |
+| `--no-bash` | Disable unsandboxed bash execution (on by default) |
 | `--learn` | Send the prompt in learn mode (guide instead of doing) |
 | `--strict-learn` | Harden learn mode: block writes outside the lessons directory |
 | `--model <name>` | Override the configured model |
@@ -106,7 +106,7 @@ Flags for `pico run`:
 ### Interactive TUI
 
 ```bash
-uv run pico-chat --allow-bash
+uv run pico-chat
 ```
 
 `pico-chat` shares the same flags. Inside the prompt you can type a message or use:

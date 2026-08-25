@@ -155,7 +155,7 @@ class BashTool:
     async def run(self, arguments: dict) -> ToolOutcome:
         if not self.enabled:
             return ToolOutcome(
-                content="error: bash is disabled; pass --allow-bash to enable",
+                content="error: bash is disabled; drop --no-bash to enable",
                 is_error=True,
             )
         command = arguments["command"]

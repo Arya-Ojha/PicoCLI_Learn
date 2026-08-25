@@ -3,7 +3,7 @@
 from pico_ai.types import ToolCall
 from pico_core.fsm import LoopEvent
 from pico_core.session import ToolRequestPayload, ToolResultPayload
-from pico_sdk.cli import format_event
+from pico_sdk.cli import build_parser, format_event
 
 
 def test_format_event_prints_text():
@@ -36,3 +36,13 @@ def test_format_event_ignores_non_bash_tools():
         tool_result=ToolResultPayload(tool_call_id="c1", name="read", content="data"),
     )
     assert format_event(result) is None
+
+
+def test_bash_enabled_by_default():
+    args = build_parser().parse_args(["run", "hi"])
+    assert args.no_bash is False
+
+
+def test_no_bash_flag_disables_bash():
+    args = build_parser().parse_args(["run", "hi", "--no-bash"])
+    assert args.no_bash is True

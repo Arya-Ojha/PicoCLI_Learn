@@ -35,7 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Run the agent on a prompt.")
     run.add_argument("prompt", nargs="+", help="The prompt to run.")
-    run.add_argument("--allow-bash", action="store_true", help="Permit unsandboxed bash.")
+    run.add_argument(
+        "--no-bash",
+        action="store_true",
+        help="Disable unsandboxed bash (on by default).",
+    )
     run.add_argument("--model", default=None, help="Override the configured model.")
     run.add_argument("--cwd", default=None, help="Working directory (default: current).")
     run.add_argument("--session", default=None, help="Resume an existing session by id.")
@@ -74,7 +78,7 @@ async def run_command(args: argparse.Namespace) -> int:
             model=model,
             settings=settings,
             working_dir=args.cwd,
-            allow_bash=args.allow_bash,
+            allow_bash=not args.no_bash,
             strict_learn=args.strict_learn,
         )
     else:
@@ -83,7 +87,7 @@ async def run_command(args: argparse.Namespace) -> int:
             model=model,
             settings=settings,
             working_dir=args.cwd,
-            allow_bash=args.allow_bash,
+            allow_bash=not args.no_bash,
             strict_learn=args.strict_learn,
         )
     prompt = " ".join(args.prompt)

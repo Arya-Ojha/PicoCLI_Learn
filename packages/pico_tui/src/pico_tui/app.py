@@ -327,7 +327,9 @@ def main(argv: list[str] | None = None) -> int:
         prog="pico-chat", description="Interactive pico session (Textual TUI)."
     )
     parser.add_argument(
-        "--allow-bash", action="store_true", help="Permit unsandboxed bash."
+        "--no-bash",
+        action="store_true",
+        help="Disable unsandboxed bash (on by default).",
     )
     parser.add_argument(
         "--model", default=None, help="Override the configured model."
@@ -355,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
             model=model,
             settings=settings,
             working_dir=args.cwd,
-            allow_bash=args.allow_bash,
+            allow_bash=not args.no_bash,
             strict_learn=args.strict_learn,
         )
     else:
@@ -364,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
             model=model,
             settings=settings,
             working_dir=args.cwd,
-            allow_bash=args.allow_bash,
+            allow_bash=not args.no_bash,
             strict_learn=args.strict_learn,
         )
     mgr = _SessionManager(session)
