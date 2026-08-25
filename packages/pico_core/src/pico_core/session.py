@@ -29,11 +29,17 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# The per-message execution mode. "act" is today's autonomous behaviour;
+# "learn" is the teaching mode that guides instead of doing.
+Mode = Literal["act", "learn"]
+
+
 class UserPayload(BaseModel):
-    """A user message."""
+    """A user message. Carries the mode the message was sent in (default act)."""
 
     kind: Literal["user"] = "user"
     content: str
+    mode: Mode = "act"
 
 
 class AssistantBlock(BaseModel):

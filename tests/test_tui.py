@@ -52,6 +52,10 @@ def test_parse_line_empty():
     assert parse_line("   ") == Prompt("")
 
 
+def test_parse_line_learn():
+    assert parse_line("/learn") == Command("learn")
+
+
 # ── render_event ────────────────────────────────────────────────────
 
 
@@ -118,6 +122,36 @@ def test_render_event_unknown_tool_uses_cyan():
     rendered = render_event(event)
     assert isinstance(rendered, Panel)
     assert rendered.border_style == "cyan"
+
+
+def _tool_request_event(name: str, arguments: dict) -> LoopEvent:
+    return LoopEvent(
+        kind="tool_request",
+        tool_request=ToolRequestPayload(
+            tool_call=ToolCall(id="c1", name=name, arguments=arguments)
+        ),
+    )
+
+
+def test_render_event_lesson_request():
+    event = _tool_request_event("lesson", {"topic": "react", "content": "x"})
+    rendered = render_event(event)
+    assert isinstance(rendered, Panel)
+    assert rendered.border_style == "red"
+
+
+def test_render_event_fetch_request():
+    event = _tool_request_event("fetch", {"url": "https://x"})
+    rendered = render_event(event)
+    assert isinstance(rendered, Panel)
+    assert rendered.border_style == "cyan"
+
+
+def test_render_event_search_request():
+    event = _tool_request_event("search", {"query": "react"})
+    rendered = render_event(event)
+    assert isinstance(rendered, Panel)
+    assert rendered.border_style == "blue"
 
 
 def test_render_event_bash_result():

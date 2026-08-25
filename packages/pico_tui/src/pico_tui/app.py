@@ -13,12 +13,14 @@ from rich.table import Table
 from rich.text import Text
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.widgets import Footer, Header, Input, RichLog
 
 from pico_sdk import (
     AgentSession,
     AssistantPayload,
     CompactionSummaryPayload,
+    Mode,
     ToolRequestPayload,
     ToolResultPayload,
     UserPayload,
@@ -37,8 +39,9 @@ HELP_TEXT = """\
   [cyan]/model <name>[/]   change the LLM model for this session
   [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
   [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
+  [cyan]/learn, Tab[/]      toggle between act mode and learn mode
   [cyan]/quit, Ctrl+Q[/]    save and exit
-Anything else is sent to the agent as a prompt.\
+Messages you send go in whichever mode is active; press Tab to switch.\
 """
 
 
@@ -64,7 +67,7 @@ class _SessionManager:
         self.session = session
 
     async def stream(
-        self, prompt: str, on_event: Callable[[object], None]
+        self, prompt: str, on_event: Callable[[object], None], *, mode: Mode = "act"
     ) -> None:
         """Consume the agent stream, calling on_event for each LoopEvent.
 
@@ -83,7 +86,7 @@ class _SessionManager:
                 on_event(Text("".join(thinking_buffer), style="dim italic"))
                 thinking_buffer.clear()
 
-        async for event in self.session.stream(prompt):
+        async for event in self.session.stream(prompt, mode=mode):
             if event.kind == "text":
                 text_buffer.append(event.text)
             elif event.kind == "thinking":
@@ -175,19 +178,43 @@ class PicoApp(App[None]):
         ("ctrl+z", "undo", "Undo"),
         ("ctrl+k", "compact", "Compact"),
         ("f1", "show_help", "Help"),
+        # Priority so it wins over the Screen's Tab focus-traversal binding.
+        Binding("tab", "toggle_learn", "Mode", priority=True),
     ]
 
     def __init__(self, mgr: _SessionManager) -> None:
         super().__init__()
         self._mgr = mgr
         self._streaming = False
+        self._mode: Mode = "act"
+
+    # -- mode helpers --
+
+    def _mode_badge(self) -> str:
+        """The visible mode badge: '[learn]' or '[act]'."""
+        return "[learn]" if self._mode == "learn" else "[act]"
+
+    def _placeholder(self) -> str:
+        return f"pico>  {self._mode_badge()}  (type a prompt, or /help for commands)"
+
+    def get_key_display(self, binding: Binding) -> str:
+        """Show the mode badge where the footer normally shows the Tab key."""
+        if binding.action == "toggle_learn":
+            return self._mode_badge()
+        return super().get_key_display(binding)
+
+    def action_toggle_learn(self) -> None:
+        """Flip between act and learn mode and reflect it in the UI."""
+        self._mode = "act" if self._mode == "learn" else "learn"
+        self.refresh_bindings()  # footer re-reads get_key_display for the badge
+        self.query_one("#input-bar", Input).placeholder = self._placeholder()
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield RichLog(id="chat-log", highlight=True, markup=True, wrap=True)
         yield Input(
             id="input-bar",
-            placeholder="pico>  (type a prompt, or /help for commands)",
+            placeholder=self._placeholder(),
         )
         yield Footer()
 
@@ -240,16 +267,18 @@ class PicoApp(App[None]):
         elif cmd.kind == "fork":
             msg = self._mgr.fork(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
+        elif cmd.kind == "learn":
+            self.action_toggle_learn()
 
     # -- prompt to agent streaming --
 
     async def _run_prompt(self, text: str) -> None:
-        """Send a user prompt to the agent and stream the response."""
+        """Send a user prompt to the agent in the current mode and stream it."""
         self._write_chat(Text(f"> {text}", style="bold"))
         self._streaming = True
-        asyncio.create_task(self._stream_worker(text))
+        asyncio.create_task(self._stream_worker(text, self._mode))
 
-    async def _stream_worker(self, prompt: str) -> None:
+    async def _stream_worker(self, prompt: str, mode: Mode) -> None:
         """Background task that consumes the agent stream."""
         try:
             chat_log = self.query_one("#chat-log", RichLog)
@@ -257,7 +286,7 @@ class PicoApp(App[None]):
             def _write(renderable: object) -> None:
                 chat_log.write(renderable)
 
-            await self._mgr.stream(prompt, _write)
+            await self._mgr.stream(prompt, _write, mode=mode)
         except Exception as exc:
             chat_log = self.query_one("#chat-log", RichLog)
             chat_log.write(
@@ -309,6 +338,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--session", default=None, help="Resume an existing session by id."
     )
+    parser.add_argument(
+        "--strict-learn",
+        action="store_true",
+        help="Harden learn mode: block writes outside the lessons directory.",
+    )
     args = parser.parse_args(argv)
 
     settings = load_settings()
@@ -322,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
             settings=settings,
             working_dir=args.cwd,
             allow_bash=args.allow_bash,
+            strict_learn=args.strict_learn,
         )
     else:
         session = AgentSession(
@@ -330,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
             settings=settings,
             working_dir=args.cwd,
             allow_bash=args.allow_bash,
+            strict_learn=args.strict_learn,
         )
     mgr = _SessionManager(session)
     app = PicoApp(mgr)
