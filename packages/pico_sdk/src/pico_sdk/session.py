@@ -46,6 +46,12 @@ LEARN_SYSTEM_PROMPT = (
 )
 
 
+# The only learn-mode exclusive tool. It is registered just before a
+# learn-mode call and removed again afterwards, so act-mode messages neither
+# have nor even see it. (fetch/search are available in both modes.)
+LEARN_ONLY_TOOL_NAMES = frozenset({"lesson"})
+
+
 class AgentSession:
     """A headless agent session: provider + tools + session tree + extensions."""
 
@@ -116,20 +122,33 @@ class AgentSession:
             write,
             edit,
             BashTool(self.working_dir, enabled=allow_bash),
-            LessonTool(self.working_dir),
             FetchTool(),
             SearchTool(),
         ):
             self.tools.register(tool)
+        # The lesson tool is learn-mode exclusive: it is held but NOT
+        # registered; it is attached per-message by _set_learn_tools_enabled.
+        self._learn_tools: list[Tool] = [LessonTool(self.working_dir)]
+
+    def _set_learn_tools_enabled(self, enabled: bool) -> None:
+        """Attach/detach the learn-only tools from the registry."""
+        if enabled:
+            for tool in self._learn_tools:
+                self.tools.register(tool)
+        else:
+            for name in LEARN_ONLY_TOOL_NAMES:
+                self.tools.unregister(name)
 
     # -- running ------------------------------------------------------------
 
     async def run(self, prompt: str, *, mode: Mode = "act") -> RunResult:
         self.loop.system_prompt = self.system_prompt_for(mode)
+        self._set_learn_tools_enabled(mode == "learn")
         return await self.loop.run(prompt, mode=mode)
 
     def stream(self, prompt: str, *, mode: Mode = "act") -> AsyncIterator[LoopEvent]:
         self.loop.system_prompt = self.system_prompt_for(mode)
+        self._set_learn_tools_enabled(mode == "learn")
         return self.loop.stream(prompt, mode=mode)
 
     def fork(self, node_id: str) -> None:

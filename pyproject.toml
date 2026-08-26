@@ -5,6 +5,10 @@ description = "A Python CLI coding agent inspired by Pi's modular architecture."
 requires-python = ">=3.12"
 dependencies = ["pico-sdk", "pico-tui"]
 
+[project.scripts]
+pico-learn = "pico_sdk.cli:main"
+pico-chat-learn = "pico_tui.app:main"
+
 [tool.uv.workspace]
 members = ["packages/*"]
 

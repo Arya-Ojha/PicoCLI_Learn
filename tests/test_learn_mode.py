@@ -88,6 +88,27 @@ def test_legacy_session_without_mode_defaults_to_act():
     assert user.mode == "act"
 
 
+async def test_learn_tools_are_act_mode_exclusive(tmp_path):
+    """The lesson tool exists only while a message runs in learn mode."""
+    provider = FakeProvider([[StreamEvent(kind="text", text="ok")]])
+    session = make_session(provider, tmp_path)
+
+    learn_names = {"lesson"}
+    # Fresh session: the lesson tool is not registered, fetch/search are.
+    assert not (set(session.tools.names()) & learn_names)
+    assert {"fetch", "search"} <= set(session.tools.names())
+
+    await session.run("act msg")
+    assert not (set(session.tools.names()) & learn_names)
+
+    await session.run("learn msg", mode="learn")
+    assert learn_names <= set(session.tools.names())
+
+    # Back to act: they are removed again.
+    await session.run("act msg 2")
+    assert not (set(session.tools.names()) & learn_names)
+
+
 def test_cli_exposes_learn_and_strict_flags():
     from pico_sdk.cli import build_parser
 
