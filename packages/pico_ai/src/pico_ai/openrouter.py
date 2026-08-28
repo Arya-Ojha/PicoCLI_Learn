@@ -55,6 +55,41 @@ class OpenRouterProvider:
             if self._client is None:
                 await client.aclose()
 
+    async def list_models(self) -> list[dict]:
+        """Return the available models from OpenRouter.
+
+        Each entry is a dict with keys ``id``, ``name`` and ``is_free``.
+        """
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        client = self._client or httpx.AsyncClient(timeout=self._timeout)
+        try:
+            response = await client.get(
+                f"{self._base_url}/models",
+                headers=headers,
+            )
+            response.raise_for_status()
+            data = response.json().get("data", [])
+        finally:
+            if self._client is None:
+                await client.aclose()
+        models: list[dict] = []
+        for entry in data:
+            pricing = entry.get("pricing") or {}
+            is_free = (
+                str(pricing.get("prompt", "1")).strip() in ("0", "0.0", "-1")
+                and str(pricing.get("completion", "1")).strip() in ("0", "0.0", "-1")
+            )
+            models.append(
+                {
+                    "id": entry.get("id", ""),
+                    "name": entry.get("name") or entry.get("id", ""),
+                    "is_free": is_free,
+                }
+            )
+        return models
+
     def _build_payload(self, request: AICallRequest) -> dict:
         messages: list[dict] = []
         if request.system:

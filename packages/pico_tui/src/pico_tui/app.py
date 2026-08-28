@@ -29,6 +29,7 @@ from pico_sdk.config import load_settings
 from pico_sdk.providers import create_provider
 
 from .commands import Command, Prompt, parse_line
+from .model_picker import ModelPickerScreen
 from .render import _truncate, render_event
 from .status_bar import ContextStatusBar
 
@@ -38,6 +39,7 @@ HELP_TEXT = """\
   [cyan]/history, Ctrl+H[/] list session nodes (with indices for /fork)
   [cyan]/compact, Ctrl+K[/] summarise older turns (optionally with steering text)
   [cyan]/model <name>[/]   change the LLM model for this session
+                          (/model alone opens an interactive model picker)
   [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
   [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
   [cyan]/learn, Tab[/]      toggle between act mode and learn mode
@@ -292,14 +294,42 @@ class PicoApp(App[None]):
             self._write_chat(Text(msg, style="dim"))
             self._update_status_bar()
         elif cmd.kind == "model":
-            msg = self._mgr.model(cmd.arg)
-            self._write_chat(Text(msg, style="dim"))
-            self._update_status_bar()
+            if not cmd.arg:
+                await self._show_model_picker()
+            else:
+                msg = self._mgr.model(cmd.arg)
+                self._write_chat(Text(msg, style="dim"))
+                self._update_status_bar()
         elif cmd.kind == "fork":
             msg = self._mgr.fork(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
         elif cmd.kind == "learn":
             self.action_toggle_learn()
+
+    # -- model picker --
+
+    async def _show_model_picker(self) -> None:
+        """Fetch available models and show the interactive picker."""
+        chat_log = self.query_one("#chat-log", RichLog)
+        chat_log.write(Text("fetching models...", style="dim"))
+        try:
+            models = await self._mgr.session.provider.list_models()
+        except Exception as exc:
+            chat_log.write(
+                Panel(f"could not fetch models: {exc}", title="error",
+                      border_style="red")
+            )
+            return
+        if not models:
+            chat_log.write(Text("(no models available)", style="dim"))
+            return
+        selected = await self.push_screen(
+            ModelPickerScreen(models, current=self._mgr.session.model)
+        )
+        if selected:
+            msg = self._mgr.model(selected)
+            self._write_chat(Text(msg, style="dim"))
+            self._update_status_bar()
 
     # -- prompt to agent streaming --
 
