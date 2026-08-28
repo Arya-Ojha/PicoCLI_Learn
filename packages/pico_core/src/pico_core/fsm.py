@@ -259,6 +259,10 @@ class AgentLoop:
                 parts.append(payload.content)
         return "\n".join(parts)
 
+    def estimate_tokens(self) -> int:
+        """Return the current estimated token count for the context."""
+        return self._estimate_tokens()
+
     def _estimate_tokens(self) -> int:
         # Rough heuristic: ~4 characters per token.
         return len(self._context_text()) // 4

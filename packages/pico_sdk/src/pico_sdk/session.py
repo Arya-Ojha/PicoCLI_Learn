@@ -98,6 +98,24 @@ class AgentSession:
     def provider(self) -> Any:
         return self.loop.provider
 
+    @property
+    def provider_name(self) -> str:
+        """Return a human-readable provider name."""
+        provider_class = type(self.loop.provider).__name__
+        # Convert CamelCase to readable name
+        if "OpenRouter" in provider_class:
+            return "OpenRouter"
+        return provider_class.replace("Provider", "")
+
+    @property
+    def context_window(self) -> int:
+        """Return the context window size."""
+        return self.loop.context_window
+
+    def estimate_tokens(self) -> int:
+        """Return the current estimated token count."""
+        return self.loop.estimate_tokens()
+
     # -- mode ---------------------------------------------------------------
 
     def system_prompt_for(self, mode: Mode) -> str:

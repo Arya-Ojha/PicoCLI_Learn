@@ -30,6 +30,7 @@ from pico_sdk.providers import create_provider
 
 from .commands import Command, Prompt, parse_line
 from .render import _truncate, render_event
+from .status_bar import ContextStatusBar
 
 HELP_TEXT = """\
 [bold]Commands (slash or key binding):[/]
@@ -167,8 +168,14 @@ class PicoApp(App[None]):
         border: none;
     }
     #input-bar {
-        dock: bottom;
-        margin: 0 1 1 1;
+        margin: 0 1;
+    }
+    #status-bar {
+        height: 1;
+        width: 100%;
+        background: $panel;
+        color: $text;
+        padding: 0 1;
     }
     """
 
@@ -216,11 +223,33 @@ class PicoApp(App[None]):
             id="input-bar",
             placeholder=self._placeholder(),
         )
+        yield ContextStatusBar(id="status-bar")
         yield Footer()
 
     def on_mount(self) -> None:
-        """Focus the input bar on start."""
+        """Focus the input bar on start and initialize status bar."""
         self.query_one("#input-bar", Input).focus()
+        self._update_status_bar()
+
+    def _update_status_bar(self) -> None:
+        """Update the status bar with current session info."""
+        try:
+            status_bar = self.query_one("#status-bar", ContextStatusBar)
+            status_bar.update_info(
+                provider=self._mgr.session.provider_name,
+                model=self._mgr.session.model,
+                tokens=self._mgr.session.estimate_tokens(),
+                context_window=self._mgr.session.context_window,
+                thinking=self._streaming,
+            )
+        except Exception as e:
+            # If status bar update fails, don't crash the app
+            # Just log it to the chat log for debugging
+            try:
+                chat_log = self.query_one("#chat-log", RichLog)
+                chat_log.write(Text(f"[Status bar error: {e}]", style="red"))
+            except Exception:
+                pass
 
     # -- input handling --
 
@@ -261,9 +290,11 @@ class PicoApp(App[None]):
         elif cmd.kind == "compact":
             msg = await self._mgr.compact(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
+            self._update_status_bar()
         elif cmd.kind == "model":
             msg = self._mgr.model(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
+            self._update_status_bar()
         elif cmd.kind == "fork":
             msg = self._mgr.fork(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
@@ -276,6 +307,7 @@ class PicoApp(App[None]):
         """Send a user prompt to the agent in the current mode and stream it."""
         self._write_chat(Text(f"> {text}", style="bold"))
         self._streaming = True
+        self._update_status_bar()
         asyncio.create_task(self._stream_worker(text, self._mode))
 
     async def _stream_worker(self, prompt: str, mode: Mode) -> None:
@@ -294,6 +326,7 @@ class PicoApp(App[None]):
             )
         finally:
             self._streaming = False
+            self._update_status_bar()
 
     # -- helpers --
 
