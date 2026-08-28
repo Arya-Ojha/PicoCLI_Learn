@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -19,6 +20,7 @@ class OpenRouterProvider:
         base_url: str = "https://openrouter.ai/api/v1",
         client: httpx.AsyncClient | None = None,
         timeout: httpx.Timeout | None = None,
+        first_token_timeout: float = 60.0,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url
@@ -26,6 +28,9 @@ class OpenRouterProvider:
         # Streaming LLM responses can take a while before the first token; the
         # httpx default (5s) is far too short, so default to a generous read.
         self._timeout = timeout or httpx.Timeout(300.0, connect=10.0)
+        # Abort if the model produces no first token within this many seconds;
+        # without it a stalled request looks like an infinite hang.
+        self._first_token_timeout = first_token_timeout
 
     async def stream(self, request: AICallRequest) -> AsyncIterator[StreamEvent]:
         payload = self._build_payload(request)
@@ -35,25 +40,62 @@ class OpenRouterProvider:
         }
         client = self._client or httpx.AsyncClient(timeout=self._timeout)
         pending: dict[int, dict] = {}
+        response_cm = client.stream(
+            "POST",
+            f"{self._base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+        response: httpx.Response | None = None
         try:
-            async with client.stream(
-                "POST",
-                f"{self._base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[len("data:") :].strip()
-                    if data == "[DONE]":
-                        break
-                    for event in self._parse_chunk(json.loads(data), pending):
-                        yield event
+            # Bound the wait for the response headers plus the first SSE line:
+            # a stalled upstream (e.g. a broken/free model) would otherwise
+            # hang for the full 300s read timeout looking like an infinite
+            # spin. Once tokens are flowing, the httpx read timeout governs
+            # inter-chunk gaps.
+            try:
+                async with asyncio.timeout(self._first_token_timeout):
+                    response = await response_cm.__aenter__()
+                    response.raise_for_status()
+                    lines = response.aiter_lines()
+                    first_line = await anext(lines, None)
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"no response from model within "
+                    f"{self._first_token_timeout:g}s "
+                    f"(first-token timeout); try another model"
+                ) from exc
+            if first_line is not None:
+                async for event in self._emit_lines(
+                    self._prepend(first_line, lines), pending
+                ):
+                    yield event
         finally:
+            if response is not None:
+                await response_cm.__aexit__(None, None, None)
             if self._client is None:
                 await client.aclose()
+
+    async def _emit_lines(
+        self, lines: AsyncIterator[str], pending: dict[int, dict]
+    ) -> AsyncIterator[StreamEvent]:
+        """Parse SSE lines and yield normalized stream events."""
+        async for line in lines:
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:") :].strip()
+            if data == "[DONE]":
+                return
+            for event in self._parse_chunk(json.loads(data), pending):
+                yield event
+
+    @staticmethod
+    async def _prepend(
+        first: str, rest: AsyncIterator[str]
+    ) -> AsyncIterator[str]:
+        yield first
+        async for item in rest:
+            yield item
 
     async def list_models(self) -> list[dict]:
         """Return the available models from OpenRouter.
