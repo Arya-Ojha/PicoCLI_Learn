@@ -26,7 +26,7 @@ from pico_sdk import (
     UserPayload,
 )
 from pico_sdk.config import load_settings
-from pico_sdk.providers import create_provider
+from pico_sdk.providers import FREE_MODEL_ALIAS, create_provider, resolve_free_model
 
 from .commands import Command, Prompt, parse_line
 from .model_picker import ModelPickerScreen
@@ -74,26 +74,35 @@ class _SessionManager:
     ) -> None:
         """Consume the agent stream, calling on_event for each LoopEvent.
 
-        Text and thinking chunks are buffered separately and flushed as single
-        Text renderables when a non-streaming event arrives (or the stream ends),
-        avoiding one-chunk-per-line output in RichLog.
+        Text and thinking chunks are buffered in a single *ordered* list of
+        segments: adjacent same-kind chunks merge into one renderable (avoiding
+        one-chunk-per-line spam in RichLog) while the stream's true order is
+        preserved — thinking that arrives after text stays after text.
         """
-        text_buffer: list[str] = []
-        thinking_buffer: list[str] = []
+        segments: list[list] = []  # ordered [kind, [chunks]] entries
+
+        def _append(kind: str, chunk: str) -> None:
+            if segments and segments[-1][0] == kind:
+                segments[-1][1].append(chunk)
+            else:
+                segments.append([kind, [chunk]])
 
         def _flush() -> None:
-            if text_buffer:
-                on_event(Text("".join(text_buffer)))
-                text_buffer.clear()
-            if thinking_buffer:
-                on_event(Text("".join(thinking_buffer), style="dim italic"))
-                thinking_buffer.clear()
+            for kind, chunks in segments:
+                if kind == "text":
+                    on_event(Text("".join(chunks)))
+                else:
+                    on_event(
+                        Text("💭 thinking: " + "".join(chunks),
+                             style="dim italic")
+                    )
+            segments.clear()
 
         async for event in self.session.stream(prompt, mode=mode):
             if event.kind == "text":
-                text_buffer.append(event.text)
+                _append("text", event.text)
             elif event.kind == "thinking":
-                thinking_buffer.append(event.thinking)
+                _append("thinking", event.thinking)
             else:
                 _flush()
                 rendered = render_event(event)
@@ -417,6 +426,14 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings()
     model = args.model or settings.model
     provider = create_provider(settings)
+    if model == FREE_MODEL_ALIAS:
+        # Resolve the alias to a concrete free model available right now;
+        # fall back to the alias itself (surfaced as an API error later)
+        # if the lookup fails.
+        resolved = asyncio.run(resolve_free_model(provider))
+        if resolved:
+            model = resolved
+            print(f"using free model: {model}")
     if args.session:
         session = AgentSession.load(
             args.session,

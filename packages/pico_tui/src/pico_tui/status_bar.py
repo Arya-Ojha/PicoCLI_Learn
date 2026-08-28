@@ -21,7 +21,7 @@ class ContextStatusBar(Static):
         """Render the initial display after the widget is mounted."""
         # Set initial placeholder content
         self._provider = "OpenRouter"
-        self._model = "nemotron-3.5-lightning:free"
+        self._model = "…"
         self._tokens = 0
         self._context_window = 128000
         self._update_display()

@@ -12,7 +12,7 @@ from pico_core.fsm import LoopEvent
 from pico_core.session import Mode
 
 from .config import load_settings
-from .providers import create_provider
+from .providers import FREE_MODEL_ALIAS, create_provider, resolve_free_model
 from .session import AgentSession
 
 
@@ -70,6 +70,11 @@ async def run_command(args: argparse.Namespace) -> int:
         return 1
 
     provider = create_provider(settings)
+    if model == FREE_MODEL_ALIAS:
+        resolved = await resolve_free_model(provider)
+        if resolved:
+            model = resolved
+            sys.stdout.write(f"using free model: {model}\n")
     mode: Mode = "learn" if args.learn else "act"
     if args.session:
         session = AgentSession.load(

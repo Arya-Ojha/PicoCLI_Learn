@@ -11,7 +11,7 @@ from pydantic import BaseModel
 class Settings(BaseModel):
     """User-configurable settings for the agent."""
 
-    model: str = "nvidia/nemotron-3.5-lightning:free"
+    model: str = "openrouter/free"  # alias: best available free model
     context_window: int = 128_000
     reserve_tokens: int = 16_384
     session_dir: str = "~/.pico/sessions"
