@@ -323,13 +323,17 @@ class PicoApp(App[None]):
         if not models:
             chat_log.write(Text("(no models available)", style="dim"))
             return
-        selected = await self.push_screen(
-            ModelPickerScreen(models, current=self._mgr.session.model)
+
+        def _on_selected(model_id: str | None) -> None:
+            if model_id:
+                msg = self._mgr.model(model_id)
+                self._write_chat(Text(msg, style="dim"))
+                self._update_status_bar()
+
+        self.push_screen(
+            ModelPickerScreen(models, current=self._mgr.session.model),
+            callback=_on_selected,
         )
-        if selected:
-            msg = self._mgr.model(selected)
-            self._write_chat(Text(msg, style="dim"))
-            self._update_status_bar()
 
     # -- prompt to agent streaming --
 

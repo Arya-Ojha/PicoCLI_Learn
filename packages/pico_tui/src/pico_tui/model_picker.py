@@ -70,8 +70,11 @@ class ModelPickerScreen(ModalScreen[str | None]):
         self, event: OptionList.OptionSelected
     ) -> None:
         """Dismiss with the selected model id."""
-        model = self._models[event.option_index]
-        self.dismiss(model["id"])
+        # Textual renamed the index attribute across versions.
+        index = getattr(event, "option_index", None)
+        if index is None:
+            index = event.index
+        self.dismiss(self._models[index]["id"])
 
     def action_cancel(self) -> None:
         """Dismiss without changing the model."""

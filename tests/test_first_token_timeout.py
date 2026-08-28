@@ -5,6 +5,7 @@ import pytest
 
 from pico_ai.openrouter import OpenRouterProvider
 from pico_ai.types import AICallRequest, Message
+from pico_tui.model_picker import ModelPickerScreen
 
 
 def _request() -> AICallRequest:
@@ -38,6 +39,98 @@ async def test_stream_times_out_when_no_first_line():
     with pytest.raises(RuntimeError, match="first-token timeout"):
         async for _ in provider.stream(_request()):
             pass
+
+
+@pytest.mark.asyncio
+async def test_full_flow_pick_model_then_prompt_sends_request(tmp_path, monkeypatch):
+    """End-to-end: /model picker selection switches model and the next prompt
+    actually reaches the provider with the new model id."""
+    from pico_ai.types import StreamEvent
+    from pico_sdk.config import Settings
+    from pico_sdk.session import AgentSession
+    from pico_tui.app import PicoApp, _SessionManager
+
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def list_models(self):
+            return [
+                {"id": "b/free", "name": "Beta Free", "is_free": True},
+                {"id": "a/paid", "name": "Alpha Paid", "is_free": False},
+            ]
+
+        async def stream(self, request):
+            self.calls.append(request)
+            yield StreamEvent(kind="text", text="ok")
+
+    provider = RecordingProvider()
+    session = AgentSession(
+        provider=provider,
+        model="original/model",
+        settings=Settings(session_dir=str(tmp_path)),
+        working_dir=tmp_path,
+        allow_bash=False,
+    )
+    app = PicoApp(_SessionManager(session))
+    async with app.run_test() as pilot:
+        # 1. open the picker via /model
+        app.query_one("#input-bar").value = "/model"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        from textual.widgets import OptionList
+
+        await pilot.pause()
+        option_list = app.screen.query_one("#model-picker-list", OptionList)
+        option_list.highlighted = 0  # sorted: free first -> b/free
+        option_list.action_select()
+        await pilot.pause()
+        assert session.model == "b/free"
+
+        # 2. send a prompt; the provider must receive a request with the model
+        app.query_one("#input-bar").value = "hi"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert provider.calls, "no request reached the provider!"
+    assert provider.calls[0].model == "b/free"
+
+
+@pytest.mark.asyncio
+async def test_picker_returns_selected_model_id():
+    """Regression: selecting an option must dismiss with the model's id.
+
+    The selected event's index attribute name differs across Textual
+    versions, which previously crashed silently and no model was set.
+    """
+    from typing import Optional
+
+    from textual.app import App
+    from textual.widgets import Label, OptionList
+
+    models = [
+        {"id": "a/paid", "name": "Alpha Paid", "is_free": False},
+        {"id": "b/free", "name": "Beta Free", "is_free": True},
+    ]
+
+    class Host(App[Optional[str]]):
+        def compose(self):
+            yield Label("host")
+
+    app = Host()
+    async with app.run_test() as pilot:
+        captured: list[str | None] = []
+        screen = ModelPickerScreen(models)
+        app.push_screen(screen, callback=captured.append)
+        await pilot.pause()
+
+        option_list = screen.query_one("#model-picker-list", OptionList)
+        option_list.highlighted = 0
+        option_list.action_select()  # simulates Enter / click selection
+        await pilot.pause()
+
+    assert captured == ["b/free"]
 
 
 @pytest.mark.asyncio
