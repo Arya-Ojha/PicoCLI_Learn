@@ -25,7 +25,7 @@ from pico_sdk import (
     ToolResultPayload,
     UserPayload,
 )
-from pico_sdk.config import load_settings
+from pico_sdk.config import load_settings, save_settings
 from pico_sdk.providers import FREE_MODEL_ALIAS, create_provider, resolve_free_model
 
 from .commands import Command, Prompt, parse_line
@@ -309,6 +309,7 @@ class PicoApp(App[None]):
                 msg = self._mgr.model(cmd.arg)
                 self._write_chat(Text(msg, style="dim"))
                 self._update_status_bar()
+                self._persist_model(cmd.arg)
         elif cmd.kind == "fork":
             msg = self._mgr.fork(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
@@ -316,6 +317,20 @@ class PicoApp(App[None]):
             self.action_toggle_learn()
 
     # -- model picker --
+
+    def _persist_model(self, model_id: str) -> None:
+        """Remember the user's model choice so the next launch opens with it.
+
+        Never aliases: we store the concrete id the user picked. Failures are
+        non-fatal — model persistence is a convenience, not a requirement.
+        """
+        try:
+            self._mgr.session.settings.model = model_id
+            save_settings(self._mgr.session.settings)
+        except Exception as exc:
+            self._write_chat(
+                Text(f"(could not save model preference: {exc})", style="dim")
+            )
 
     async def _show_model_picker(self) -> None:
         """Fetch available models and show the interactive picker."""
@@ -338,6 +353,7 @@ class PicoApp(App[None]):
                 msg = self._mgr.model(model_id)
                 self._write_chat(Text(msg, style="dim"))
                 self._update_status_bar()
+                self._persist_model(model_id)
 
         self.push_screen(
             ModelPickerScreen(models, current=self._mgr.session.model),

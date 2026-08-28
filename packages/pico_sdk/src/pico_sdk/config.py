@@ -33,3 +33,13 @@ def load_settings(path: Path | None = None) -> Settings:
         return Settings()
     data = json.loads(path.read_text(encoding="utf-8"))
     return Settings.model_validate(data)
+
+
+def save_settings(settings: Settings, path: Path | None = None) -> Path:
+    """Persist ``settings`` to ``path`` (default ``~/.pico/settings.json``)."""
+    path = Path(path) if path is not None else default_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(settings.model_dump(), indent=2) + "\n", encoding="utf-8"
+    )
+    return path
