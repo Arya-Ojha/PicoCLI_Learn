@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from pico_ai.openrouter import OpenRouterProvider
-from pico_ai.types import AICallRequest, Message
+from pico_ai.types import AICallRequest, Message, ToolDefinition
 from pico_tui.model_picker import ModelPickerScreen
 
 
@@ -95,6 +95,90 @@ async def test_full_flow_pick_model_then_prompt_sends_request(tmp_path, monkeypa
 
     assert provider.calls, "no request reached the provider!"
     assert provider.calls[0].model == "b/free"
+
+
+@pytest.mark.asyncio
+async def test_stream_surfaces_api_error_body():
+    """A 400 response must surface the API's error body, not just the status."""
+    error_json = b'{"error": {"message": "Tool use is not supported"}}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, content=error_json)
+
+    provider = OpenRouterProvider(
+        api_key="test",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(RuntimeError, match="Tool use is not supported"):
+        async for _ in provider.stream(_request()):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_tools_omitted_for_models_without_tool_support():
+    """Models that reject tools get a payload without tools instead of a 400."""
+    provider = OpenRouterProvider(api_key="test")
+    provider._tool_support["free/no-tools"] = False
+
+    request = AICallRequest(
+        model="free/no-tools",
+        messages=[Message(role="user", content="hi")],
+        tools=[ToolDefinition(
+            name="read", description="read", input_schema={"type": "object"}
+        )],
+    )
+    payload = provider._build_payload(request)
+    assert "tools" not in payload
+
+    provider._tool_support["paid/tools"] = True
+    request2 = AICallRequest(
+        model="paid/tools",
+        messages=[Message(role="user", content="hi")],
+        tools=request.tools,
+    )
+    payload2 = provider._build_payload(request2)
+    assert "tools" in payload2
+
+
+@pytest.mark.asyncio
+async def test_list_models_records_tool_support():
+    """list_models populates the tool-support cache used by _build_payload."""
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {
+                        "id": "m/no-tools",
+                        "name": "No Tools",
+                        "pricing": {"prompt": "0", "completion": "0"},
+                        "supported_parameters": ["temperature"],
+                    },
+                    {
+                        "id": "m/tools",
+                        "name": "With Tools",
+                        "pricing": {"prompt": "0", "completion": "0"},
+                        "supported_parameters": ["tools", "tool_choice"],
+                    },
+                ]
+            }
+
+    class FakeClient:
+        async def get(self, *args, **kwargs) -> FakeResponse:
+            return FakeResponse()
+
+        async def aclose(self) -> None:
+            pass
+
+    provider = OpenRouterProvider(api_key="test", client=FakeClient())
+    models = await provider.list_models()
+    by_id = {m["id"]: m for m in models}
+    assert by_id["m/no-tools"]["supports_tools"] is False
+    assert by_id["m/tools"]["supports_tools"] is True
+    assert provider._tool_support["m/no-tools"] is False
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,9 @@ class OpenRouterProvider:
         # Abort if the model produces no first token within this many seconds;
         # without it a stalled request looks like an infinite hang.
         self._first_token_timeout = first_token_timeout
+        # model id -> whether the model supports tool calling (populated by
+        # list_models); unknown models are assumed to support tools.
+        self._tool_support: dict[str, bool] = {}
 
     async def stream(self, request: AICallRequest) -> AsyncIterator[StreamEvent]:
         payload = self._build_payload(request)
@@ -56,7 +59,18 @@ class OpenRouterProvider:
             try:
                 async with asyncio.timeout(self._first_token_timeout):
                     response = await response_cm.__aenter__()
-                    response.raise_for_status()
+                    if response.status_code >= 400:
+                        # Surface the API's error body: raise_for_status()
+                        # alone hides the actual reason (e.g. unsupported
+                        # tool calling for the chosen model).
+                        body = (await response.aread()).decode(
+                            errors="replace"
+                        )
+                        raise RuntimeError(
+                            f"OpenRouter error {response.status_code} "
+                            f"for model '{request.model}': "
+                            f"{body[:500]}"
+                        )
                     lines = response.aiter_lines()
                     first_line = await anext(lines, None)
             except TimeoutError as exc:
@@ -123,11 +137,20 @@ class OpenRouterProvider:
                 str(pricing.get("prompt", "1")).strip() in ("0", "0.0", "-1")
                 and str(pricing.get("completion", "1")).strip() in ("0", "0.0", "-1")
             )
+            supported = entry.get("supported_parameters") or []
+            supports_tools = any(
+                p in supported for p in ("tools", "tool_choice")
+            )
+            model_id = entry.get("id", "")
+            # Remember tool support so stream() can omit tools for models
+            # that reject them (OpenRouter answers 400 otherwise).
+            self._tool_support[model_id] = supports_tools
             models.append(
                 {
-                    "id": entry.get("id", ""),
-                    "name": entry.get("name") or entry.get("id", ""),
+                    "id": model_id,
+                    "name": entry.get("name") or model_id,
                     "is_free": is_free,
+                    "supports_tools": supports_tools,
                 }
             )
         return models
@@ -165,7 +188,7 @@ class OpenRouterProvider:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if request.tools:
+        if request.tools and self._tool_support.get(request.model, True):
             payload["tools"] = [
                 {
                     "type": "function",
