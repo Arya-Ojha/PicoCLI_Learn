@@ -7,6 +7,9 @@ import asyncio
 import sys
 
 from collections.abc import Callable
+from dataclasses import dataclass
+
+from rich.markup import escape
 
 from rich.panel import Panel
 from rich.table import Table
@@ -44,8 +47,34 @@ HELP_TEXT = """\
   [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
   [cyan]/learn, Tab[/]      toggle between act mode and learn mode
   [cyan]/quit, Ctrl+Q[/]    save and exit
-Messages you send go in whichever mode is active; press Tab to switch.\
+Messages you send go in whichever mode is active; press Tab to switch.
+💭 thinking streams in full while the model thinks, then collapses to one
+line — click '▸ show thinking' to expand or collapse it again.\
 """
+
+
+@dataclass
+class ThinkingSegment:
+    """A live thinking block in the chat transcript.
+
+    While the model is thinking, ``text`` grows chunk by chunk and is
+    rendered in full (streaming). Once the segment ends it is marked
+    ``final`` and collapses to a single clickable line; clicking toggles
+    it back to the full text.
+    """
+
+    text: str
+    id: int | None = None
+    final: bool = False
+
+
+def thinking_preview(full: str) -> tuple[str, bool]:
+    """Return (first non-empty line, was_truncated) for a thinking block."""
+    for line in full.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped, full != stripped
+    return "", bool(full.strip())
 
 
 def _snippet(payload: object) -> str:
@@ -72,12 +101,16 @@ class _SessionManager:
     async def stream(
         self, prompt: str, on_event: Callable[[object], None], *, mode: Mode = "act"
     ) -> None:
-        """Consume the agent stream, calling on_event for each LoopEvent.
+        """Consume the agent stream, calling on_event for each renderable.
 
-        Text and thinking chunks are buffered in a single *ordered* list of
-        segments: adjacent same-kind chunks merge into one renderable (avoiding
-        one-chunk-per-line spam in RichLog) while the stream's true order is
-        preserved — thinking that arrives after text stays after text.
+        Text chunks are buffered so adjacent same-kind chunks merge into one
+        renderable (avoiding one-chunk-per-line spam in RichLog), while the
+        stream's true order is preserved — thinking that arrives after text
+        stays after text.
+
+        Thinking is streamed *live* as ThinkingSegment events: the on_event
+        consumer accumulates them and collapses the segment to one clickable
+        line once it ends (see PicoApp._write_thinking).
         """
         segments: list[list] = []  # ordered [kind, [chunks]] entries
 
@@ -91,18 +124,14 @@ class _SessionManager:
             for kind, chunks in segments:
                 if kind == "text":
                     on_event(Text("".join(chunks)))
-                else:
-                    on_event(
-                        Text("💭 thinking: " + "".join(chunks),
-                             style="dim italic")
-                    )
             segments.clear()
 
         async for event in self.session.stream(prompt, mode=mode):
             if event.kind == "text":
                 _append("text", event.text)
             elif event.kind == "thinking":
-                _append("thinking", event.thinking)
+                _flush()
+                on_event(ThinkingSegment(event.thinking))
             else:
                 _flush()
                 rendered = render_event(event)
@@ -205,6 +234,12 @@ class PicoApp(App[None]):
         self._mgr = mgr
         self._streaming = False
         self._mode: Mode = "act"
+        # Everything written to the chat log, in order. Thinking blocks are
+        # stored as ThinkingSegment so they can collapse/expand on click.
+        self._transcript: list[object] = []
+        self._thinking_seq = 0
+        self._thinking_expanded: set[int] = set()
+        self._thinking_rerender_pending = False
 
     # -- mode helpers --
 
@@ -257,8 +292,9 @@ class PicoApp(App[None]):
             # If status bar update fails, don't crash the app
             # Just log it to the chat log for debugging
             try:
-                chat_log = self.query_one("#chat-log", RichLog)
-                chat_log.write(Text(f"[Status bar error: {e}]", style="red"))
+                self._write_chat(
+                    Text(f"[Status bar error: {e}]", style="red")
+                )
             except Exception:
                 pass
 
@@ -334,18 +370,17 @@ class PicoApp(App[None]):
 
     async def _show_model_picker(self) -> None:
         """Fetch available models and show the interactive picker."""
-        chat_log = self.query_one("#chat-log", RichLog)
-        chat_log.write(Text("fetching models...", style="dim"))
+        self._write_chat(Text("fetching models...", style="dim"))
         try:
             models = await self._mgr.session.provider.list_models()
         except Exception as exc:
-            chat_log.write(
+            self._write_chat(
                 Panel(f"could not fetch models: {exc}", title="error",
                       border_style="red")
             )
             return
         if not models:
-            chat_log.write(Text("(no models available)", style="dim"))
+            self._write_chat(Text("(no models available)", style="dim"))
             return
 
         def _on_selected(model_id: str | None) -> None:
@@ -372,25 +407,103 @@ class PicoApp(App[None]):
     async def _stream_worker(self, prompt: str, mode: Mode) -> None:
         """Background task that consumes the agent stream."""
         try:
-            chat_log = self.query_one("#chat-log", RichLog)
-
             def _write(renderable: object) -> None:
-                chat_log.write(renderable)
+                if isinstance(renderable, ThinkingSegment):
+                    self._write_thinking(renderable)
+                else:
+                    self._write_chat(renderable)
 
             await self._mgr.stream(prompt, _write, mode=mode)
         except Exception as exc:
-            chat_log = self.query_one("#chat-log", RichLog)
-            chat_log.write(
+            self._write_chat(
                 Panel(str(exc), title="error", border_style="red")
             )
         finally:
+            self._finalize_thinking()
             self._streaming = False
             self._update_status_bar()
 
     # -- helpers --
 
     def _write_chat(self, renderable: object) -> None:
+        """Append a renderable to the transcript and the chat log.
+
+        Any open (still-streaming) thinking segment is finalized first so
+        the log order matches the transcript order.
+        """
+        self._finalize_thinking()
+        self._transcript.append(renderable)
         self.query_one("#chat-log", RichLog).write(renderable)
+
+    def _write_thinking(self, segment: ThinkingSegment) -> None:
+        """Grow the open thinking segment with a streamed chunk.
+
+        The full text is shown live while the segment streams; the caller
+        finalizes it later (collapsing it to one clickable line). Rather
+        than writing each chunk (RichLog starts a new line per write,
+        which would print one word per line), the accumulated text is
+        re-rendered from the transcript, coalesced to one redraw per
+        event-loop tick.
+        """
+        last = self._transcript[-1] if self._transcript else None
+        if isinstance(last, ThinkingSegment) and not last.final:
+            last.text += segment.text
+        else:
+            self._thinking_seq += 1
+            segment.id = self._thinking_seq
+            self._transcript.append(segment)
+        self._schedule_thinking_rerender()
+
+    def _schedule_thinking_rerender(self) -> None:
+        """Coalesce thinking redraws to at most one per event-loop tick."""
+        if self._thinking_rerender_pending:
+            return
+        self._thinking_rerender_pending = True
+        self.call_later(self._flush_thinking_rerender)
+
+    def _flush_thinking_rerender(self) -> None:
+        self._thinking_rerender_pending = False
+        self._rerender_chat()
+
+    def _finalize_thinking(self) -> None:
+        """Collapse an open thinking segment to a single clickable line."""
+        last = self._transcript[-1] if self._transcript else None
+        if isinstance(last, ThinkingSegment) and not last.final:
+            last.final = True
+            self._rerender_chat()
+
+    def _thinking_renderable(self, segment: ThinkingSegment) -> object:
+        """Live (full text), collapsed one-line, or expanded text block."""
+        if not segment.final:
+            # Still streaming: show the full accumulated text.
+            return Text(segment.text, style="dim italic")
+        if segment.id is not None and segment.id in self._thinking_expanded:
+            return Text(segment.text, style="dim italic")
+        preview, truncated = thinking_preview(segment.text)
+        ellipsis = " …" if truncated else ""
+        return (
+            f"[dim italic]💭 thinking: {escape(preview)}{ellipsis} "
+            f"[@click=app.toggle_thinking({segment.id})]▸ show thinking[/][/]"
+        )
+
+    def _rerender_chat(self) -> None:
+        """Redraw the whole chat log from the transcript (thinking blocks
+        rendered collapsed or expanded per current toggle state)."""
+        chat_log = self.query_one("#chat-log", RichLog)
+        chat_log.clear()
+        for item in self._transcript:
+            if isinstance(item, ThinkingSegment):
+                chat_log.write(self._thinking_renderable(item))
+            else:
+                chat_log.write(item)
+
+    async def action_toggle_thinking(self, block_id: int) -> None:
+        """Expand or collapse a thinking block when its line is clicked."""
+        if block_id in self._thinking_expanded:
+            self._thinking_expanded.discard(block_id)
+        else:
+            self._thinking_expanded.add(block_id)
+        self._rerender_chat()
 
     # -- key binding actions --
 

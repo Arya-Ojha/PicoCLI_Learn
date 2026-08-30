@@ -7,7 +7,7 @@ from pico_core.fsm import LoopEvent
 from pico_sdk.config import Settings
 from pico_sdk.providers import FREE_MODEL_ALIAS, resolve_free_model
 from pico_sdk.session import AgentSession
-from pico_tui.app import _SessionManager
+from pico_tui.app import _SessionManager, ThinkingSegment
 
 
 class ScriptedProvider:
@@ -79,8 +79,9 @@ async def test_stream_preserves_wire_order(tmp_path):
     first, second, third = captured
     # Wire order preserved: answer, then thinking, then more answer text.
     assert first.plain == "answer!"
-    assert second.plain.startswith("💭 thinking:")
-    assert "hmm" in second.plain
+    assert isinstance(second, ThinkingSegment)
+    assert second.text == "hmm"
+    assert not second.final  # still streaming; app collapses it later
     assert third.plain == " more"
 
 

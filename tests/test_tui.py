@@ -2,12 +2,14 @@
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.text import Text
 
 from pico_ai.types import StreamEvent, ToolCall, Usage
 from pico_core.fsm import LoopEvent
 from pico_core.session import ToolRequestPayload, ToolResultPayload
 
+from pico_tui.app import _SessionManager
 from pico_tui.commands import Command, Prompt, parse_line
 from pico_tui.render import render_event
 
@@ -23,6 +25,41 @@ def _render_text(event: LoopEvent) -> str:
     with _console.capture() as capture:
         _console.print(rendered)
     return capture.get().rstrip()
+
+
+# ── thinking collapse / expand ──────────────────────────────────────
+
+
+def test_thinking_preview_single_line():
+    from pico_tui.app import thinking_preview
+    assert thinking_preview("hmm") == ("hmm", False)
+
+
+def test_thinking_preview_multiline():
+    from pico_tui.app import thinking_preview
+    preview, truncated = thinking_preview("first line\nsecond line")
+    assert preview == "first line"
+    assert truncated is True
+
+
+def test_thinking_renderable_collapsed_and_expanded():
+    from pico_tui.app import PicoApp, ThinkingSegment
+
+    class _FakeSession:
+        pass
+
+    app = PicoApp(_SessionManager(_FakeSession()))  # type: ignore[arg-type]
+    seg = ThinkingSegment(text="line one\nline two", id=1, final=True)
+    collapsed = app._thinking_renderable(seg)
+    assert isinstance(collapsed, str)
+    assert "💭 thinking: line one" in collapsed
+    assert "…" in collapsed
+    assert "@click=app.toggle_thinking(1)" in collapsed
+    # Expanding shows the full text instead.
+    app._thinking_expanded.add(1)
+    expanded = app._thinking_renderable(seg)
+    assert isinstance(expanded, Text)
+    assert "line two" in expanded.plain
 
 
 # ── parse_line ──────────────────────────────────────────────────────
@@ -110,6 +147,43 @@ def test_render_event_write_request():
     rendered = render_event(event)
     assert isinstance(rendered, Panel)
     assert rendered.border_style == "yellow"
+
+
+def test_render_event_edit_formats_code_fields():
+    """edit requests render old_text/new_text as labeled code blocks."""
+    event = LoopEvent(
+        kind="tool_request",
+        tool_request=ToolRequestPayload(
+            tool_call=ToolCall(
+                id="c1",
+                name="edit",
+                arguments={
+                    "path": "todo.html",
+                    "old_text": "<button>old</button>",
+                    "new_text": "<button>new</button>\n<div>more</div>",
+                },
+            )
+        ),
+    )
+    rendered = render_event(event)
+    assert isinstance(rendered, Panel)
+    assert "edit" in rendered.title
+    assert "todo.html" in rendered.title
+    parts = rendered.renderable.renderables
+    body = "".join(
+        part.code if isinstance(part, Syntax) else str(part) for part in parts
+    )
+    assert "── old_text" in body
+    assert "── new_text" in body
+    assert "<button>old</button>" in body
+    assert "<div>more</div>" in body
+
+
+def test_render_event_other_tool_args_pretty_json():
+    event = _tool_request_event("search", {"query": "react hooks", "limit": 5})
+    result = _render_text(event)
+    assert '"query": "react hooks"' in result
+    assert "\n" in result  # multi-line, not a one-line dict repr
 
 
 def test_render_event_unknown_tool_uses_cyan():

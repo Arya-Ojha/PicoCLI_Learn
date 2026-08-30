@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
+from rich.console import Group
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.text import Text
 
 from pico_sdk import LoopEvent
@@ -50,8 +54,10 @@ def render_event(event: LoopEvent):  # -> RenderableType (kept loose for mypy si
                 border_style=color,
                 title_align="left",
             )
+        if call.name in ("edit", "write"):
+            return _edit_write_panel(call.name, call.arguments, color)
         return Panel(
-            str(call.arguments),
+            _pretty_args(call.arguments),
             title=f"[bold {color}]{call.name}[/]",
             border_style=color,
             title_align="left",
@@ -84,3 +90,55 @@ def _looks_like_markdown(text: str) -> bool:
     return "\n" in text or any(
         marker in text for marker in ("```", "**", "# ", "- ", "1. ", "|")
     )
+
+
+# Keys that carry code content in edit/write tool arguments, in display order.
+_CODE_KEYS = ("old_text", "new_text", "content")
+
+
+def _syntax_for(text: str, path: str) -> Syntax:
+    """Render text as code with the language guessed from the file path."""
+    lexer = None
+    if "." in path.rsplit("/", 1)[-1] and path.rsplit("/", 1)[-1].split(".")[-1]:
+        ext = path.rsplit(".", 1)[-1].lower()
+        ext_map = {
+            "py": "python", "js": "javascript", "ts": "typescript",
+            "html": "html", "css": "css", "json": "json", "md": "markdown",
+            "yml": "yaml", "yaml": "yaml", "toml": "toml", "rs": "rust",
+            "go": "go", "java": "java", "c": "c", "cpp": "cpp", "sh": "bash",
+        }
+        lexer = ext_map.get(ext)
+    return Syntax(
+        text,
+        lexer or "text",
+        word_wrap=True,
+        theme="ansi_dark",
+        background_color="default",
+    )
+
+
+def _edit_write_panel(name: str, arguments: dict, color: str) -> Panel:
+    """Format an edit/write request: path in the title, fields as code blocks."""
+    path = str(arguments.get("path", ""))
+    parts: list = []
+    for key in _CODE_KEYS:
+        if key in arguments and arguments[key] != "":
+            parts.append(Text(f"── {key} ", style=f"bold {color}"))
+            parts.append(_syntax_for(str(arguments[key]), path))
+    if not parts:  # no code fields (e.g. a delete or move) — show args
+        parts.append(_pretty_args(arguments))
+    title = f"[bold {color}]{name}[/] {path}" if path else f"[bold {color}]{name}[/]"
+    return Panel(
+        Group(*parts),
+        title=title,
+        border_style=color,
+        title_align="left",
+    )
+
+
+def _pretty_args(arguments: dict) -> str:
+    """Indent-2 JSON dump so other tools' args stay readable."""
+    try:
+        return json.dumps(arguments, indent=2, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(arguments)
