@@ -17,7 +17,7 @@ The domain vocabulary for **pico**, a Python CLI coding agent inspired by Pi's m
 - **Compaction** — summarising older context so the session fits within the model's context window.
 - **Context window** — the token budget of the model in use.
 - **Reserve tokens** — the portion of the context window held back for the model's own response.
-- **Provider** — an LLM backend. Every provider is reached through a single gateway and exposed as one unified **AI call**.
+- **Provider** — an LLM backend. Every provider is reached through a single gateway and exposed as one unified **AI call**. The default is **local**: a loopback vLLM server (`http://localhost:8000/v1`), so everything runs on this machine with no API key. The OpenRouter cloud backend is kept for testing only and is slated for removal.
 - **AI call** — the unified request/response shape used to talk to any provider.
 - **Headless** — running the agent programmatically (as a library) with no terminal UI.
 - **Extension** (also **plugin**) — a modular capability registered into the agent: a tool, a provider, or a UI widget. Extensions are loaded from a plugins directory or registered explicitly.

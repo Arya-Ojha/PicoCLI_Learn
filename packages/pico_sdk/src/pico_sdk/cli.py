@@ -10,9 +10,18 @@ from pathlib import Path
 
 from pico_core.fsm import LoopEvent
 
-from .config import load_settings
-from .providers import FREE_MODEL_ALIAS, create_provider, resolve_free_model
+import re as _re
+
+from .config import load_settings, save_settings
+from .providers import (
+    FREE_MODEL_ALIAS,
+    create_provider,
+    resolve_free_model,
+    resolve_model,
+)
 from .session import AgentSession
+
+_EXIT_CODE_RE = _re.compile(r"\[exit code: (-?\d+)\]")
 
 
 def format_event(event: LoopEvent) -> str | None:
@@ -24,7 +33,12 @@ def format_event(event: LoopEvent) -> str | None:
             return "$ " + event.tool_request.tool_call.arguments.get("command", "") + "\n"
     if event.kind == "tool_result" and event.tool_result is not None:
         if event.tool_result.name == "bash":
-            return event.tool_result.content.rstrip() + "\n"
+            match = _EXIT_CODE_RE.search(event.tool_result.content)
+            code = match.group(1) if match else None
+            suffix = f" [exit code: {code}]" if code is not None else ""
+            if event.tool_result.is_error:
+                return f"bash error{suffix}\n"
+            return f"bash passed{suffix}\n"
     return None
 
 
@@ -40,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable unsandboxed bash (on by default).",
     )
     run.add_argument("--model", default=None, help="Override the configured model.")
+    run.add_argument(
+        "--provider",
+        default=None,
+        choices=["local", "openrouter"],
+        help="Override the configured backend (default: from settings).",
+    )
     run.add_argument("--cwd", default=None, help="Working directory (default: current).")
     run.add_argument("--session", default=None, help="Resume an existing session by id.")
     return parser
@@ -47,23 +67,53 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def run_command(args: argparse.Namespace) -> int:
     settings = load_settings()
-    model = args.model or settings.model
-    api_key = os.environ.get(settings.api_key_env, "")
-
-    if not api_key:
-        sys.stderr.write(
-            f"error: {settings.api_key_env} is not set.\n"
-            f"Set it before running pico, e.g.:\n"
-            f'  $env:{settings.api_key_env} = "sk-or-v1-..."\n'
-        )
-        return 1
-
+    if getattr(args, "provider", None):
+        settings.provider = args.provider
     provider = create_provider(settings)
-    if model == FREE_MODEL_ALIAS:
-        resolved = await resolve_free_model(provider)
-        if resolved:
-            model = resolved
-            sys.stdout.write(f"using free model: {model}\n")
+
+    if (settings.provider or "local").lower() == "openrouter":
+        # Cloud backend, kept for testing: still needs its API key.
+        api_key = os.environ.get(settings.api_key_env, "")
+        if not api_key:
+            sys.stderr.write(
+                f"error: {settings.api_key_env} is not set.\n"
+                f"Set it before running pico, e.g.:\n"
+                f'  $env:{settings.api_key_env} = "sk-or-v1-..."\n'
+            )
+            return 1
+        model = args.model or settings.model
+        if model == FREE_MODEL_ALIAS:
+            resolved = await resolve_free_model(provider)
+            if resolved:
+                model = resolved
+                sys.stdout.write(f"using free model: {model}\n")
+    elif args.model:
+        model = args.model
+    else:
+        # Local backend: auto-detect the served model.
+        model, served = await resolve_model(provider, settings)
+        ids = [m.get("id", "") for m in served if m.get("id")]
+        if not served:
+            sys.stderr.write(
+                f"warning: no local models detected at {settings.base_url}; "
+                f"is the server running? using '{model}'.\n"
+            )
+        else:
+            if (settings.model or "").strip() not in ids:
+                # Remember the pick so the next launch skips detection.
+                settings.model = model
+                try:
+                    save_settings(settings)
+                except OSError:
+                    pass
+            if len(ids) > 1:
+                sys.stdout.write(
+                    "served models: "
+                    + ", ".join(ids)
+                    + f"\nusing {model} (change anytime with /model)\n"
+                )
+            else:
+                sys.stdout.write(f"using local model: {model}\n")
     if args.session:
         session = AgentSession.load(
             args.session,

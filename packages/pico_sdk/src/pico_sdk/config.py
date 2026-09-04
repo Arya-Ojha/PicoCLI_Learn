@@ -11,11 +11,24 @@ from pydantic import BaseModel
 class Settings(BaseModel):
     """User-configurable settings for the agent."""
 
-    model: str = "openrouter/free"  # alias: best available free model
+    # Which backend serves the model: "local" (loopback vLLM server,
+    # air-tight) or "openrouter" (cloud; kept for testing, slated for
+    # removal in the final version).
+    provider: str = "local"
+    # Base URL of the local OpenAI-compatible server (vLLM default).
+    base_url: str = "http://localhost:8000/v1"
+    # Model id, or "" for auto-detect: the served model is picked from the
+    # local server (single served model is used directly; with several,
+    # the first is used and /model offers the rest as a selector).
+    model: str = ""
     context_window: int = 128_000
     reserve_tokens: int = 16_384
     session_dir: str = "~/.pico/sessions"
+    # Only used by the "openrouter" provider.
     api_key_env: str = "OPENROUTER_API_KEY"
+    # Optional: env var holding the local server key, only if the server
+    # was started with --api-key. Empty means no auth header is sent.
+    local_api_key_env: str = "VLLM_API_KEY"
 
 
 def default_settings_path() -> Path:

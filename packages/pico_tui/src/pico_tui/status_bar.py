@@ -20,7 +20,7 @@ class ContextStatusBar(Static):
     def on_mount(self) -> None:
         """Render the initial display after the widget is mounted."""
         # Set initial placeholder content
-        self._provider = "OpenRouter"
+        self._provider = "local"
         self._model = "…"
         self._tokens = 0
         self._context_window = 128000

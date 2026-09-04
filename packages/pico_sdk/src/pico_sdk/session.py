@@ -66,7 +66,11 @@ class AgentSession:
     @property
     def provider_name(self) -> str:
         """Return a human-readable provider name."""
-        provider_class = type(self.loop.provider).__name__
+        provider = self.loop.provider
+        display = getattr(provider, "display_name", "")
+        if display:
+            return display
+        provider_class = type(provider).__name__
         # Convert CamelCase to readable name
         if "OpenRouter" in provider_class:
             return "OpenRouter"

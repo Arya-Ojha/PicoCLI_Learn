@@ -15,7 +15,8 @@ pico_ai ─► pico_core ─► pico_sdk ─► pico_tui
 - **Headless CLI** — `pico run "do a task"` completes a coding task end-to-end with a single prompt.
 - **Interactive TUI** — `pico-chat` is a full terminal UI (Textual + Rich) for back-and-forth sessions.
 - **Four core tools** — `read`, `write`, `edit` (search/replace patches), and `bash`.
-- **One-way LLM gateway** — all models reached through a single streaming OpenRouter client behind one unified "AI call" shape. Responses stream token-by-token.
+- **Fully local by default** — models are served by a loopback vLLM server (`http://localhost:8000/v1`): no cloud, no API key, nothing leaves the machine. The OpenRouter cloud backend is kept for testing only.
+- **One-way LLM gateway** — all backends behind one unified "AI call" shape. Responses stream token-by-token.
 - **Reasoning & usage** — thinking blocks are preserved in the transcript; token counts are tracked.
 - **Session tree** — sessions are persisted as append-only trees of nodes; you can resume, rewind, and fork branches.
 - **Auto-compaction** — context is summarised automatically at a token threshold, plus a manual override.
@@ -37,7 +38,7 @@ Dependencies flow one way — `pico_ai` ← `pico_core` ← `pico_sdk` ← `pico
 
 - Python **3.12+**
 - [uv](https://docs.astral.sh/uv/) (workspace + dev tooling)
-- An [OpenRouter](https://openrouter.ai/) API key (the current provider gateway)
+- A local [vLLM](https://docs.vllm.ai/) server with a tool-capable model (e.g. a Qwen coder or Llama-3.x instruct build — the agent loop depends on tool calls)
 
 ## Installation
 
@@ -47,17 +48,17 @@ uv sync
 
 ## Configuration
 
-### 1. Set your API key
+### 1. Start your local model
 
-The CLI reads the key from an environment variable (default `OPENROUTER_API_KEY`):
-
-```powershell
-# temporary (current shell)
-$env:OPENROUTER_API_KEY = "sk-or-v1-..."
-
-# persistent (Windows, survives new shells)
-setx OPENROUTER_API_KEY "sk-or-v1-..."
+```bash
+# serve a tool-capable model with an OpenAI-compatible API
+vllm serve qwen2.5-coder-32b-instruct --port 8000
 ```
+
+On first launch pico queries the server's served models: a single served
+model is used directly (and remembered), several are listed with a hint to
+pick one via `/model` in the TUI. If the server is down you get a warning
+instead of a cloud fallback — nothing ever leaves the machine unasked.
 
 ### 2. Optional `settings.json`
 
@@ -65,13 +66,25 @@ Create `~/.pico/settings.json` to override defaults:
 
 ```json
 {
-  "model": "openrouter/free",
+  "provider": "local",
+  "base_url": "http://localhost:8000/v1",
+  "model": "",
   "context_window": 128000,
   "reserve_tokens": 16384,
-  "session_dir": "~/.pico/sessions",
-  "api_key_env": "OPENROUTER_API_KEY"
+  "session_dir": "~/.pico/sessions"
 }
 ```
+
+- `"model": ""` means auto-detect served models. Set it to pin a model id.
+- Inside the TUI, `/provider` shows the active backend; `/provider local`
+  and `/provider openrouter` switch backends at runtime (an optional second
+  word pins the model, e.g. `/provider local tiny-llama`). The choice is
+  remembered. Headless runs accept `--provider local|openrouter` the same way.
+- Match `context_window` to your served model's max — the default (128000)
+  likely exceeds small local models.
+- Cloud testing only: `"provider": "openrouter"` re-enables the OpenRouter
+  backend (then `OPENROUTER_API_KEY` must be set); it is slated for removal
+  in the final version.
 
 ## Usage
 
@@ -113,6 +126,7 @@ uv run pico-chat
 | `/help` | `F1` | Show help |
 | `/history` | `Ctrl+H` | List session nodes (with indices for `/fork`) |
 | `/compact [text]` | `Ctrl+K` | Compact context (optionally with steering text) |
+| `/provider ...` | — | Show or switch backends: `local` \| `openrouter` (optional model) |
 | `/fork <n or id>` | — | Rewind to a node and start a new branch |
 | `/undo` | `Ctrl+Z` | Rewind to the previous user turn |
 | `/quit` | `Ctrl+Q` | Save the session and exit |

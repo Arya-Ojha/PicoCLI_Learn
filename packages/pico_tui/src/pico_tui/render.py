@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from rich.console import Group
 from rich.markdown import Markdown
@@ -25,6 +26,24 @@ def _truncate(text: str, limit: int = 200) -> str:
     """Collapse whitespace and truncate long tool output."""
     text = " ".join(text.split())
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+_EXIT_CODE_RE = re.compile(r"\[exit code: (-?\d+)\]")
+
+
+def bash_status(content: str, is_error: bool) -> tuple[str, str]:
+    """Return (short label, color) for a bash result; output itself stays hidden.
+
+    The full command output remains in the session for the model — the UI
+    only shows whether it passed or failed.
+    """
+    match = _EXIT_CODE_RE.search(content)
+    code = match.group(1) if match else None
+    if not is_error:
+        label = f"passed{f' [exit code: {code}]' if code is not None else ''}"
+        return label, "green"
+    label = f"error{f' [exit code: {code}]' if code is not None else ''}"
+    return label, "red"
 
 
 def render_event(event: LoopEvent):  # -> RenderableType (kept loose for mypy simplicity)
@@ -63,8 +82,9 @@ def render_event(event: LoopEvent):  # -> RenderableType (kept loose for mypy si
         result = event.tool_result
         color = _TOOL_COLORS.get(result.name, "dim cyan")
         if result.name == "bash":
+            label, color = bash_status(result.content, result.is_error)
             return Panel(
-                result.content.rstrip(),
+                label,
                 title=f"[{color}]{result.name} result[/]",
                 border_style=color,
                 title_align="left",

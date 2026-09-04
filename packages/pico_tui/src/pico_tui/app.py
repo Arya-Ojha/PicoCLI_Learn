@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 
 from collections.abc import Callable
@@ -22,16 +23,23 @@ from pico_sdk import (
     AgentSession,
     AssistantPayload,
     CompactionSummaryPayload,
+    LoopEvent,
     ToolRequestPayload,
     ToolResultPayload,
     UserPayload,
 )
 from pico_sdk.config import load_settings, save_settings
-from pico_sdk.providers import FREE_MODEL_ALIAS, create_provider, resolve_free_model
+from pico_sdk.providers import (
+    FALLBACK_MODEL,
+    FREE_MODEL_ALIAS,
+    create_provider,
+    resolve_free_model,
+    resolve_model,
+)
 
 from .commands import Command, Prompt, parse_line
 from .model_picker import ModelPickerScreen
-from .render import _truncate, render_event
+from .render import _truncate, bash_status, render_event
 from .status_bar import ContextStatusBar
 
 HELP_TEXT = """\
@@ -41,6 +49,8 @@ HELP_TEXT = """\
   [cyan]/compact, Ctrl+K[/] summarise older turns (optionally with steering text)
   [cyan]/model <name>[/]   change the LLM model for this session
                           (/model alone opens an interactive model picker)
+  [cyan]/provider ...[/]  show or switch backends: local | openrouter
+                          (e.g. /provider local, /provider openrouter)
   [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
   [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
   [cyan]/quit, Ctrl+Q[/]    save and exit
@@ -71,6 +81,21 @@ def thinking_preview(full: str) -> tuple[str, bool]:
         if stripped:
             return stripped, full != stripped
     return "", bool(full.strip())
+
+
+@dataclass
+class BashResultSegment:
+    """A failed bash result in the chat transcript.
+
+    Passes stay a short status line, but failures hide their (possibly
+    long) output behind a collapsed one-line summary; clicking toggles
+    it to the full output and back. The id is assigned by
+    ``PicoApp._write_bash_result`` when the segment is appended.
+    """
+
+    content: str
+    is_error: bool = False
+    id: int | None = None
 
 
 def _snippet(payload: object) -> str:
@@ -106,7 +131,9 @@ class _SessionManager:
 
         Thinking is streamed *live* as ThinkingSegment events: the on_event
         consumer accumulates them and collapses the segment to one clickable
-        line once it ends (see PicoApp._write_thinking).
+        line once it ends (see PicoApp._write_thinking). Failed bash results
+        arrive as BashResultSegment events so the app can collapse/expand
+        their output on click (see PicoApp._write_bash_result).
         """
         segments: list[list] = []  # ordered [kind, [chunks]] entries
 
@@ -119,7 +146,9 @@ class _SessionManager:
         def _flush() -> None:
             for kind, chunks in segments:
                 if kind == "text":
-                    on_event(Text("".join(chunks)))
+                    rendered = render_event(LoopEvent(kind="text", text="".join(chunks)))
+                    if rendered is not None:
+                        on_event(rendered)
             segments.clear()
 
         async for event in self.session.stream(prompt):
@@ -128,6 +157,19 @@ class _SessionManager:
             elif event.kind == "thinking":
                 _flush()
                 on_event(ThinkingSegment(event.thinking))
+            elif (
+                event.kind == "tool_result"
+                and event.tool_result is not None
+                and event.tool_result.name == "bash"
+                and event.tool_result.is_error
+            ):
+                _flush()
+                on_event(
+                    BashResultSegment(
+                        content=event.tool_result.content,
+                        is_error=event.tool_result.is_error,
+                    )
+                )
             else:
                 _flush()
                 rendered = render_event(event)
@@ -175,6 +217,59 @@ class _SessionManager:
         self.session.model = arg
         self.session.loop.model = arg
         return f"switched to model: {arg}"
+
+    async def provider(self, arg: str) -> tuple[str, bool]:
+        """Switch backends; returns (message, changed).
+
+        Usage: ``/provider`` (show current), ``/provider local [model]``,
+        ``/provider openrouter [model]``. The choice is kept in memory;
+        the caller persists settings.
+        """
+        # NOTE: create_provider/resolve_* are module globals (imported from
+        # pico_sdk.providers) so tests can stub pico_tui.app.create_provider.
+        settings = self.session.settings
+        current = (settings.provider or "local").lower()
+        parts = arg.split()
+        if not parts:
+            return (
+                f"current provider: {current} (model: {self.session.model}) — "
+                "use /provider local|openrouter [model]",
+                False,
+            )
+        which = parts[0].lower()
+        if which not in ("local", "openrouter"):
+            return "error: provider must be local or openrouter", False
+        pinned = " ".join(parts[1:]).strip()
+        if which == "openrouter" and not os.environ.get(settings.api_key_env, ""):
+            return (
+                f"error: {settings.api_key_env} is not set; "
+                "cannot switch to openrouter",
+                False,
+            )
+        settings.provider = which
+        self.session.loop.provider = create_provider(settings)
+        if pinned:
+            model, note = pinned, ""
+        elif which == "openrouter":
+            resolved = await resolve_free_model(self.session.loop.provider)
+            model = resolved or FALLBACK_MODEL
+            note = f"using free model: {model}\n" if resolved else ""
+        else:
+            model, served = await resolve_model(self.session.loop.provider, settings)
+            ids = [m.get("id", "") for m in served if m.get("id")]
+            if not served:
+                note = (
+                    f"warning: no local models detected at "
+                    f"{settings.base_url}; using '{model}'.\n"
+                )
+            elif len(ids) > 1:
+                note = "served models: " + ", ".join(ids) + "\n"
+            else:
+                note = ""
+        self.session.model = model
+        self.session.loop.model = model
+        settings.model = model
+        return f"{note}switched to provider: {which} (model: {model})", True
 
     def fork(self, arg: str) -> str:
         branch = self.session.session.active_branch()
@@ -228,11 +323,14 @@ class PicoApp(App[None]):
         self._mgr = mgr
         self._streaming = False
         # Everything written to the chat log, in order. Thinking blocks are
-        # stored as ThinkingSegment so they can collapse/expand on click.
+        # stored as ThinkingSegment and failed bash results as
+        # BashResultSegment so they can collapse/expand on click.
         self._transcript: list[object] = []
         self._thinking_seq = 0
         self._thinking_expanded: set[int] = set()
         self._thinking_rerender_pending = False
+        self._bash_seq = 0
+        self._bash_expanded: set[int] = set()
 
     def _placeholder(self) -> str:
         return "pico>  (type a prompt, or /help for commands)"
@@ -249,6 +347,10 @@ class PicoApp(App[None]):
 
     def on_mount(self) -> None:
         """Focus the input bar on start and initialize status bar."""
+        # No link tint or hover highlight in the chat log: click targets
+        # (e.g. thinking lines) stay visually identical hovered or not,
+        # while remaining clickable.
+        self.query_one("#chat-log", RichLog).auto_links = False
         self.query_one("#input-bar", Input).focus()
         self._update_status_bar()
 
@@ -321,6 +423,12 @@ class PicoApp(App[None]):
                 self._write_chat(Text(msg, style="dim"))
                 self._update_status_bar()
                 self._persist_model(cmd.arg)
+        elif cmd.kind == "provider":
+            msg, changed = await self._mgr.provider(cmd.arg)
+            self._write_chat(Text(msg, style="dim"))
+            if changed:
+                self._persist_model(self._mgr.session.model)
+            self._update_status_bar()
         elif cmd.kind == "fork":
             msg = self._mgr.fork(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
@@ -383,6 +491,8 @@ class PicoApp(App[None]):
             def _write(renderable: object) -> None:
                 if isinstance(renderable, ThinkingSegment):
                     self._write_thinking(renderable)
+                elif isinstance(renderable, BashResultSegment):
+                    self._write_bash_result(renderable)
                 else:
                     self._write_chat(renderable)
 
@@ -446,27 +556,71 @@ class PicoApp(App[None]):
             self._rerender_chat()
 
     def _thinking_renderable(self, segment: ThinkingSegment) -> object:
-        """Live (full text), collapsed one-line, or expanded text block."""
+        """Live (full text), collapsed one-liner, or expanded text block.
+
+        Multi-line thinking collapses to its first line plus ``...``, and
+        the whole line is a single click target — clicking anywhere on it
+        expands the full thinking; clicking anywhere on the expanded
+        block collapses it again. Single-line thinking has nothing hidden,
+        so it renders as a plain, non-clickable line with no ``...``.
+        """
         if not segment.final:
             # Still streaming: show the full accumulated text.
             return Text(segment.text, style="dim italic")
-        if segment.id is not None and segment.id in self._thinking_expanded:
+        if segment.id is None:
             return Text(segment.text, style="dim italic")
+        if segment.id in self._thinking_expanded:
+            return (
+                f"[@click=app.toggle_thinking({segment.id})]"
+                f"[dim italic]{escape(segment.text)}[/][/]"
+            )
         preview, truncated = thinking_preview(segment.text)
-        ellipsis = " …" if truncated else ""
+        if not truncated:
+            return Text(f"💭 {preview}", style="dim italic")
         return (
-            f"[dim italic]💭 thinking: {escape(preview)}{ellipsis} "
-            f"[@click=app.toggle_thinking({segment.id})]▸ show thinking[/][/]"
+            f"[@click=app.toggle_thinking({segment.id})]"
+            f"[dim italic]💭 {escape(preview)}...[/][/]"
+        )
+
+    def _write_bash_result(self, segment: BashResultSegment) -> None:
+        """Append a failed bash result as a collapsed, clickable line."""
+        self._finalize_thinking()
+        self._bash_seq += 1
+        segment.id = self._bash_seq
+        self._transcript.append(segment)
+        self.query_one("#chat-log", RichLog).write(self._bash_renderable(segment))
+
+    def _bash_renderable(self, segment: BashResultSegment) -> object:
+        """Collapsed one-line error summary, or the full output when expanded.
+
+        The whole line is a single click target in both states; passes
+        never reach here (they render as short panels via render_event).
+        """
+        if segment.id is None:
+            label, _ = bash_status(segment.content, segment.is_error)
+            return Text(f"bash {label}", style="red")
+        if segment.id in self._bash_expanded:
+            return (
+                f"[@click=app.toggle_bash({segment.id})]"
+                f"[red]{escape(segment.content.rstrip())}[/][/]"
+            )
+        label, _ = bash_status(segment.content, segment.is_error)
+        return (
+            f"[@click=app.toggle_bash({segment.id})]"
+            f"[red]bash {escape(label)}...[/][/]"
         )
 
     def _rerender_chat(self) -> None:
         """Redraw the whole chat log from the transcript (thinking blocks
-        rendered collapsed or expanded per current toggle state)."""
+        and failed bash results rendered collapsed or expanded per current
+        toggle state)."""
         chat_log = self.query_one("#chat-log", RichLog)
         chat_log.clear()
         for item in self._transcript:
             if isinstance(item, ThinkingSegment):
                 chat_log.write(self._thinking_renderable(item))
+            elif isinstance(item, BashResultSegment):
+                chat_log.write(self._bash_renderable(item))
             else:
                 chat_log.write(item)
 
@@ -476,6 +630,14 @@ class PicoApp(App[None]):
             self._thinking_expanded.discard(block_id)
         else:
             self._thinking_expanded.add(block_id)
+        self._rerender_chat()
+
+    async def action_toggle_bash(self, block_id: int) -> None:
+        """Expand or collapse a failed bash result when its line is clicked."""
+        if block_id in self._bash_expanded:
+            self._bash_expanded.discard(block_id)
+        else:
+            self._bash_expanded.add(block_id)
         self._rerender_chat()
 
     # -- key binding actions --
@@ -513,6 +675,12 @@ def main(argv: list[str] | None = None) -> int:
         "--model", default=None, help="Override the configured model."
     )
     parser.add_argument(
+        "--provider",
+        default=None,
+        choices=["local", "openrouter"],
+        help="Override the configured backend (default: from settings).",
+    )
+    parser.add_argument(
         "--cwd", default=None, help="Working directory (default: current)."
     )
     parser.add_argument(
@@ -521,16 +689,52 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = load_settings()
-    model = args.model or settings.model
+    if args.provider:
+        settings.provider = args.provider
     provider = create_provider(settings)
-    if model == FREE_MODEL_ALIAS:
-        # Resolve the alias to a concrete free model available right now;
-        # fall back to the alias itself (surfaced as an API error later)
-        # if the lookup fails.
-        resolved = asyncio.run(resolve_free_model(provider))
-        if resolved:
-            model = resolved
-            print(f"using free model: {model}")
+    if (settings.provider or "local").lower() == "openrouter":
+        if not os.environ.get(settings.api_key_env, ""):
+            print(
+                f"error: {settings.api_key_env} is not set; "
+                "switch to the local backend or set the key."
+            )
+            return 1
+        model = args.model or settings.model
+        if model == FREE_MODEL_ALIAS:
+            # Resolve the alias to a concrete free model available right now;
+            # fall back to the alias itself (surfaced as an API error later)
+            # if the lookup fails.
+            resolved = asyncio.run(resolve_free_model(provider))
+            if resolved:
+                model = resolved
+                print(f"using free model: {model}")
+    elif args.model:
+        model = args.model
+    else:
+        # Local backend: auto-detect the served model.
+        model, served = asyncio.run(resolve_model(provider, settings))
+        ids = [m.get("id", "") for m in served if m.get("id")]
+        if not served:
+            print(
+                f"warning: no local models detected at {settings.base_url}; "
+                f"is the server running? using '{model}'."
+            )
+        else:
+            if (settings.model or "").strip() not in ids:
+                # Remember the pick so the next launch skips detection.
+                settings.model = model
+                try:
+                    save_settings(settings)
+                except OSError:
+                    pass
+            if len(ids) > 1:
+                print(
+                    "served models: "
+                    + ", ".join(ids)
+                    + f"\nusing {model} (change anytime with /model)"
+                )
+            else:
+                print(f"using local model: {model}")
     if args.session:
         session = AgentSession.load(
             args.session,

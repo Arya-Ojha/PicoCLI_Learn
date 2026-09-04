@@ -1,4 +1,9 @@
-"""OpenRouter provider: streams chat completions and normalizes to StreamEvents."""
+"""Local provider: streams chat completions from a loopback OpenAI-compatible
+server (vLLM, llama.cpp --server, LM Studio) and normalizes to StreamEvents.
+
+No cloud, no API key required: the default endpoint is the local vLLM
+server. Everything stays on this machine.
+"""
 
 from __future__ import annotations
 
@@ -10,44 +15,43 @@ import httpx
 
 from .types import AICallRequest, StreamEvent, ToolCall, Usage
 
+#: Default endpoint of a local vLLM server (OpenAI-compatible API).
+DEFAULT_LOCAL_BASE_URL = "http://localhost:8000/v1"
 
-class OpenRouterProvider:
-    """Streams chat completions from OpenRouter and normalizes them.
 
-    Cloud backend, kept for testing; slated for removal in the final
-    (fully local) version.
-    """
+class LocalProvider:
+    """Streams chat completions from a local OpenAI-compatible server."""
 
     #: Human-readable name shown in the TUI status bar.
-    display_name = "OpenRouter"
+    display_name = "vLLM"
 
     def __init__(
         self,
-        api_key: str,
-        base_url: str = "https://openrouter.ai/api/v1",
+        base_url: str = DEFAULT_LOCAL_BASE_URL,
+        api_key: str = "",
         client: httpx.AsyncClient | None = None,
         timeout: httpx.Timeout | None = None,
         first_token_timeout: float = 60.0,
     ) -> None:
+        self._base_url = base_url.rstrip("/")
         self._api_key = api_key
-        self._base_url = base_url
         self._client = client
-        # Streaming LLM responses can take a while before the first token; the
-        # httpx default (5s) is far too short, so default to a generous read.
+        # Local inference (especially first-token / model load) can take a
+        # while; default to a generous read timeout.
         self._timeout = timeout or httpx.Timeout(300.0, connect=10.0)
-        # Abort if the model produces no first token within this many seconds;
-        # without it a stalled request looks like an infinite hang.
+        # Abort if the local server produces no first token within this many
+        # seconds; without it a stalled server looks like an infinite hang.
         self._first_token_timeout = first_token_timeout
-        # model id -> whether the model supports tool calling (populated by
-        # list_models); unknown models are assumed to support tools.
+        # model id -> whether the model supports tool calling. Local
+        # /v1/models responses don't advertise this, so unknown models are
+        # assumed to support tools.
         self._tool_support: dict[str, bool] = {}
 
     async def stream(self, request: AICallRequest) -> AsyncIterator[StreamEvent]:
         payload = self._build_payload(request)
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         client = self._client or httpx.AsyncClient(timeout=self._timeout)
         pending: dict[int, dict] = {}
         response_cm = client.stream(
@@ -58,23 +62,14 @@ class OpenRouterProvider:
         )
         response: httpx.Response | None = None
         try:
-            # Bound the wait for the response headers plus the first SSE line:
-            # a stalled upstream (e.g. a broken/free model) would otherwise
-            # hang for the full 300s read timeout looking like an infinite
-            # spin. Once tokens are flowing, the httpx read timeout governs
-            # inter-chunk gaps.
+            # Bound the wait for the response headers plus the first SSE line.
             try:
                 async with asyncio.timeout(self._first_token_timeout):
                     response = await response_cm.__aenter__()
                     if response.status_code >= 400:
-                        # Surface the API's error body: raise_for_status()
-                        # alone hides the actual reason (e.g. unsupported
-                        # tool calling for the chosen model).
-                        body = (await response.aread()).decode(
-                            errors="replace"
-                        )
+                        body = (await response.aread()).decode(errors="replace")
                         raise RuntimeError(
-                            f"OpenRouter error {response.status_code} "
+                            f"local model error {response.status_code} "
                             f"for model '{request.model}': "
                             f"{body[:500]}"
                         )
@@ -82,9 +77,10 @@ class OpenRouterProvider:
                     first_line = await anext(lines, None)
             except TimeoutError as exc:
                 raise RuntimeError(
-                    f"no response from model within "
+                    f"no response from local model within "
                     f"{self._first_token_timeout:g}s "
-                    f"(first-token timeout); try another model"
+                    f"(first-token timeout); is the server running at "
+                    f"{self._base_url}?"
                 ) from exc
             if first_line is not None:
                 async for event in self._emit_lines(
@@ -119,9 +115,12 @@ class OpenRouterProvider:
             yield item
 
     async def list_models(self) -> list[dict]:
-        """Return the available models from OpenRouter.
+        """Return the models served by the local server.
 
-        Each entry is a dict with keys ``id``, ``name`` and ``is_free``.
+        Each entry is a dict with keys ``id``, ``name``, ``is_free`` (always
+        True — local inference costs nothing per call) and
+        ``supports_tools`` (assumed True; the OpenAI ``/v1/models`` shape
+        does not advertise tool support).
         """
         headers = {}
         if self._api_key:
@@ -139,25 +138,14 @@ class OpenRouterProvider:
                 await client.aclose()
         models: list[dict] = []
         for entry in data:
-            pricing = entry.get("pricing") or {}
-            is_free = (
-                str(pricing.get("prompt", "1")).strip() in ("0", "0.0", "-1")
-                and str(pricing.get("completion", "1")).strip() in ("0", "0.0", "-1")
-            )
-            supported = entry.get("supported_parameters") or []
-            supports_tools = any(
-                p in supported for p in ("tools", "tool_choice")
-            )
             model_id = entry.get("id", "")
-            # Remember tool support so stream() can omit tools for models
-            # that reject them (OpenRouter answers 400 otherwise).
-            self._tool_support[model_id] = supports_tools
+            self._tool_support[model_id] = True
             models.append(
                 {
                     "id": model_id,
-                    "name": entry.get("name") or model_id,
-                    "is_free": is_free,
-                    "supports_tools": supports_tools,
+                    "name": entry.get("id") or model_id,
+                    "is_free": True,
+                    "supports_tools": True,
                 }
             )
         return models
@@ -193,8 +181,9 @@ class OpenRouterProvider:
             "model": request.model,
             "messages": messages,
             "stream": True,
-            "stream_options": {"include_usage": True},
         }
+        # Note: no stream_options.include_usage — vLLM support varies by
+        # version and some builds reject unknown fields.
         if request.tools and self._tool_support.get(request.model, True):
             payload["tools"] = [
                 {
