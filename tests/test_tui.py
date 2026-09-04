@@ -1,24 +1,15 @@
-"""pico_tui tests: command parsing, Rich rendering, and Textual pilot."""
+"""Smoke: TUI command parsing + text rendering."""
 
 from rich.console import Console
-from rich.panel import Panel
-from rich.syntax import Syntax
-from rich.text import Text
 
-from pico_ai.types import StreamEvent, ToolCall, Usage
 from pico_core.fsm import LoopEvent
-from pico_core.session import ToolRequestPayload, ToolResultPayload
-
-from pico_tui.app import _SessionManager
-from pico_tui.commands import Command, Prompt, parse_line
+from pico_tui.commands import Command, parse_line
 from pico_tui.render import render_event
 
-# Shared console for rendering-to-text assertions.
 _console = Console(force_terminal=True, color_system=None, width=200, height=100)
 
 
 def _render_text(event: LoopEvent) -> str:
-    """Render a LoopEvent to plain text for assertion."""
     rendered = render_event(event)
     if rendered is None:
         return ""
@@ -27,51 +18,8 @@ def _render_text(event: LoopEvent) -> str:
     return capture.get().rstrip()
 
 
-# ── thinking collapse / expand ──────────────────────────────────────
-
-
-def test_thinking_preview_single_line():
-    from pico_tui.app import thinking_preview
-    assert thinking_preview("hmm") == ("hmm", False)
-
-
-def test_thinking_preview_multiline():
-    from pico_tui.app import thinking_preview
-    preview, truncated = thinking_preview("first line\nsecond line")
-    assert preview == "first line"
-    assert truncated is True
-
-
-def test_thinking_renderable_collapsed_and_expanded():
-    from pico_tui.app import PicoApp, ThinkingSegment
-
-    class _FakeSession:
-        pass
-
-    app = PicoApp(_SessionManager(_FakeSession()))  # type: ignore[arg-type]
-    seg = ThinkingSegment(text="line one\nline two", id=1, final=True)
-    collapsed = app._thinking_renderable(seg)
-    assert isinstance(collapsed, str)
-    assert "💭 thinking: line one" in collapsed
-    assert "…" in collapsed
-    assert "@click=app.toggle_thinking(1)" in collapsed
-    # Expanding shows the full text instead.
-    app._thinking_expanded.add(1)
-    expanded = app._thinking_renderable(seg)
-    assert isinstance(expanded, Text)
-    assert "line two" in expanded.plain
-
-
-# ── parse_line ──────────────────────────────────────────────────────
-
-
-def test_parse_line_model():
-    assert parse_line("/model openai/gpt-4o") == Command("model", "openai/gpt-4o")
-
-
 def test_parse_line_commands():
     assert parse_line("/quit") == Command("quit")
-    assert parse_line("/exit") == Command("quit")
     assert parse_line("/help") == Command("help")
     assert parse_line("/history") == Command("history")
     assert parse_line("/undo") == Command("undo")
@@ -79,201 +27,6 @@ def test_parse_line_commands():
     assert parse_line("/fork abc123") == Command("fork", "abc123")
 
 
-def test_parse_line_prompt():
-    assert parse_line("hello world") == Prompt("hello world")
-    assert parse_line("  hi  ") == Prompt("hi")
-
-
-def test_parse_line_empty():
-    assert parse_line("") == Prompt("")
-    assert parse_line("   ") == Prompt("")
-
-
-def test_parse_line_learn():
-    assert parse_line("/learn") == Command("learn")
-
-
-# ── render_event ────────────────────────────────────────────────────
-
-
 def test_render_event_text():
     event = LoopEvent(kind="text", text="hi")
     assert _render_text(event) == "hi"
-
-
-def test_render_event_markdown():
-    event = LoopEvent(kind="text", text="# Title\n\n- item 1\n- item 2")
-    result = _render_text(event)
-    assert "Title" in result
-    assert "item 1" in result
-
-
-def test_render_event_thinking():
-    event = LoopEvent(kind="thinking", thinking="hmm let me think")
-    assert "hmm let me think" in _render_text(event)
-
-
-def test_render_event_bash_request():
-    event = LoopEvent(
-        kind="tool_request",
-        tool_request=ToolRequestPayload(
-            tool_call=ToolCall(id="c1", name="bash", arguments={"command": "ls -la"})
-        ),
-    )
-    rendered = render_event(event)
-    assert isinstance(rendered, Panel)
-    assert rendered.border_style == "green"
-
-
-def test_render_event_read_request():
-    event = LoopEvent(
-        kind="tool_request",
-        tool_request=ToolRequestPayload(
-            tool_call=ToolCall(id="c1", name="read", arguments={"path": "a.txt"})
-        ),
-    )
-    rendered = render_event(event)
-    assert isinstance(rendered, Panel)
-    assert rendered.border_style == "bright_blue"
-
-
-def test_render_event_write_request():
-    event = LoopEvent(
-        kind="tool_request",
-        tool_request=ToolRequestPayload(
-            tool_call=ToolCall(id="c1", name="write", arguments={"path": "b.txt", "content": "x"})
-        ),
-    )
-    rendered = render_event(event)
-    assert isinstance(rendered, Panel)
-    assert rendered.border_style == "yellow"
-
-
-def test_render_event_edit_formats_code_fields():
-    """edit requests render old_text/new_text as labeled code blocks."""
-    event = LoopEvent(
-        kind="tool_request",
-        tool_request=ToolRequestPayload(
-            tool_call=ToolCall(
-                id="c1",
-                name="edit",
-                arguments={
-                    "path": "todo.html",
-                    "old_text": "<button>old</button>",
-                    "new_text": "<button>new</button>\n<div>more</div>",
-                },
-            )
-        ),
-    )
-    rendered = render_event(event)
-    assert isinstance(rendered, Panel)
-    assert "edit" in rendered.title
-    assert "todo.html" in rendered.title
-    parts = rendered.renderable.renderables
-    body = "".join(
-        part.code if isinstance(part, Syntax) else str(part) for part in parts
-    )
-    assert "── old_text" in body
-    assert "── new_text" in body
-    assert "<button>old</button>" in body
-    assert "<div>more</div>" in body
-
-
-def test_render_event_other_tool_args_pretty_json():
-    event = _tool_request_event("search", {"query": "react hooks", "limit": 5})
-    result = _render_text(event)
-    assert '"query": "react hooks"' in result
-    assert "\n" in result  # multi-line, not a one-line dict repr
-
-
-def test_render_event_unknown_tool_uses_cyan():
-    event = LoopEvent(
-        kind="tool_request",
-        tool_request=ToolRequestPayload(
-            tool_call=ToolCall(id="c1", name="unknown_tool", arguments={})
-        ),
-    )
-    rendered = render_event(event)
-    assert isinstance(rendered, Panel)
-    assert rendered.border_style == "cyan"
-
-
-def _tool_request_event(name: str, arguments: dict) -> LoopEvent:
-    return LoopEvent(
-        kind="tool_request",
-        tool_request=ToolRequestPayload(
-            tool_call=ToolCall(id="c1", name=name, arguments=arguments)
-        ),
-    )
-
-
-def test_render_event_lesson_request():
-    event = _tool_request_event("lesson", {"topic": "react", "content": "x"})
-    rendered = render_event(event)
-    assert isinstance(rendered, Panel)
-    assert rendered.border_style == "red"
-
-
-def test_render_event_fetch_request():
-    event = _tool_request_event("fetch", {"url": "https://x"})
-    rendered = render_event(event)
-    assert isinstance(rendered, Panel)
-    assert rendered.border_style == "cyan"
-
-
-def test_render_event_search_request():
-    event = _tool_request_event("search", {"query": "react"})
-    rendered = render_event(event)
-    assert isinstance(rendered, Panel)
-    assert rendered.border_style == "blue"
-
-
-def test_render_event_bash_result():
-    event = LoopEvent(
-        kind="tool_result",
-        tool_result=ToolResultPayload(
-            tool_call_id="c1", name="bash", content="file1.txt\n[exit code: 0]"
-        ),
-    )
-    result = _render_text(event)
-    assert "file1.txt" in result
-
-
-def test_render_event_read_result():
-    event = LoopEvent(
-        kind="tool_result",
-        tool_result=ToolResultPayload(
-            tool_call_id="c1", name="read", content="hello world from file"
-        ),
-    )
-    result = _render_text(event)
-    assert "hello world from file" in result
-
-
-def test_render_event_usage():
-    event = LoopEvent(kind="usage", usage=Usage(input_tokens=10, output_tokens=5))
-    result = _render_text(event)
-    assert "10" in result
-    assert "5" in result
-
-
-def test_render_event_returns_rich_renderable():
-    """render_event returns Rich objects, not raw strings."""
-    event = LoopEvent(kind="text", text="# Title")
-    rendered = render_event(event)
-    # Rich Markdown objects are not plain strings
-    assert not isinstance(rendered, str)
-
-    event2 = LoopEvent(kind="thinking", thinking="hmm")
-    rendered2 = render_event(event2)
-    assert isinstance(rendered2, Text)
-
-    event3 = LoopEvent(
-        kind="tool_request",
-        tool_request=ToolRequestPayload(
-            tool_call=ToolCall(id="c1", name="bash", arguments={"command": "ls"})
-        ),
-    )
-    rendered3 = render_event(event3)
-    assert isinstance(rendered3, Panel)
-

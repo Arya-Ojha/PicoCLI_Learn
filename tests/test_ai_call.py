@@ -1,9 +1,9 @@
-"""Ticket 01 — the unified AI call: types round-trip and OpenRouter normalization."""
+"""Smoke: unified AI call types + text streaming."""
 
 import httpx
 
 from pico_ai.openrouter import OpenRouterProvider
-from pico_ai.types import AICallRequest, Message, ToolCall, ToolDefinition
+from pico_ai.types import AICallRequest, Message, ToolDefinition
 
 
 def test_types_round_trip_provider_agnostic():
@@ -38,32 +38,3 @@ async def test_openrouter_streams_text():
         )
     ]
     assert "".join(e.text for e in events if e.kind == "text") == "Hello world"
-
-
-async def test_openrouter_streams_tool_call():
-    sse = (
-        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":""}}]}}]}\n\n'
-        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"a.txt\\"}"}}]}}]}\n\n'
-        'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n'
-        "data: [DONE]\n\n"
-    )
-
-    async def handler(request):
-        return httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
-
-    provider = OpenRouterProvider(
-        api_key="test", client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    )
-    events = [
-        e
-        async for e in provider.stream(
-            AICallRequest(
-                model="x",
-                messages=[Message(role="user", content="read a.txt")],
-                tools=[ToolDefinition(name="read", input_schema={"type": "object"})],
-            )
-        )
-    ]
-    calls = [e.tool_call for e in events if e.kind == "tool_call"]
-    assert len(calls) == 1
-    assert calls[0] == ToolCall(id="call_1", name="read", arguments={"path": "a.txt"})

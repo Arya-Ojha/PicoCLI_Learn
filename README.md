@@ -15,7 +15,6 @@ pico_ai ─► pico_core ─► pico_sdk ─► pico_tui
 - **Headless CLI** — `pico run "do a task"` completes a coding task end-to-end with a single prompt.
 - **Interactive TUI** — `pico-chat` is a full terminal UI (Textual + Rich) for back-and-forth sessions.
 - **Four core tools** — `read`, `write`, `edit` (search/replace patches), and `bash`.
-- **Learn mode** — press `Tab` (or type `/learn`) to send a message as the learner instead of asking the agent to do the work: it tutors with a graded hint ladder and builds interactive HTML lessons.
 - **One-way LLM gateway** — all models reached through a single streaming OpenRouter client behind one unified "AI call" shape. Responses stream token-by-token.
 - **Reasoning & usage** — thinking blocks are preserved in the transcript; token counts are tracked.
 - **Session tree** — sessions are persisted as append-only trees of nodes; you can resume, rewind, and fork branches.
@@ -97,8 +96,6 @@ Flags for `pico run`:
 | Flag | Purpose |
 |---|---|
 | `--no-bash` | Disable unsandboxed bash execution (on by default) |
-| `--learn` | Send the prompt in learn mode (guide instead of doing) |
-| `--strict-learn` | Harden learn mode: block writes outside the lessons directory |
 | `--model <name>` | Override the configured model |
 | `--cwd <path>` | Set the working directory |
 | `--session <id>` | Resume an existing session |
@@ -116,41 +113,11 @@ uv run pico-chat
 | `/help` | `F1` | Show help |
 | `/history` | `Ctrl+H` | List session nodes (with indices for `/fork`) |
 | `/compact [text]` | `Ctrl+K` | Compact context (optionally with steering text) |
-| `/learn` | `Tab` | Toggle between act mode and learn mode |
 | `/fork <n or id>` | — | Rewind to a node and start a new branch |
 | `/undo` | `Ctrl+Z` | Rewind to the previous user turn |
 | `/quit` | `Ctrl+Q` | Save the session and exit |
 
 Tool activity is rendered inline — bash commands echoed before running (green), and tool calls/results shown as color-coded panels (`read` blue, `write` yellow, `edit` magenta, `bash` green).
-
-### Learn mode
-
-Learning is a message-by-message choice. Press `Tab` (or type `/learn`) and the
-footer and prompt flip between `[act]` and `[learn]`; the next message you send
-goes out in whichever mode is active. Consecutive messages can mix the two
-freely. In **learn mode** the agent guides instead of doing: it tutors over your
-repository using a graded *hint ladder* (concept → outline → snippet with a gap
-→ full solution, only on explicit request), and builds *lessons* for topics you
-want to study.
-
-To learn a topic, ask for it in learn mode, e.g. "I want to learn about
-React.js". The agent researches with `search` and `fetch`, then writes **one
-lesson at a time** as a self-contained HTML page (inline CSS + a self-checking
-quiz) and opens it in your browser when finished. Lessons live under the working
-directory:
-
-```text
-pico-lessons/
-  <topic-slug>/           one directory per topic
-    index.html            the lesson plan / table of contents
-    01-<slug>.html        numbered lesson pages
-```
-
-Three learn-mode tools are available: **lesson** (write a lesson page),
-**fetch** (retrieve a web page), and **search** (DuckDuckGo, zero API keys).
-For a stricter, demo-safe session pass `--strict-learn` so that `write`/`edit`
-are blocked outside `pico-lessons/` — the learner stays the sole author of
-their own code.
 
 ## Where sessions live
 
