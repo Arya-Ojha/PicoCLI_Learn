@@ -29,6 +29,9 @@ class Settings(BaseModel):
     # Optional: env var holding the local server key, only if the server
     # was started with --api-key. Empty means no auth header is sent.
     local_api_key_env: str = "VLLM_API_KEY"
+    # Pygments theme for code blocks in the TUI (e.g. monokai, dracula,
+    # github-dark). Any style pygments ships is accepted.
+    code_theme: str = "monokai"
 
 
 def default_settings_path() -> Path:

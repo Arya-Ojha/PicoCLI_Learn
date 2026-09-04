@@ -9,9 +9,12 @@ import sys
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
+from rich.console import ConsoleRenderable
 from rich.markup import escape
 
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -50,7 +53,9 @@ HELP_TEXT = """\
   [cyan]/model <name>[/]   change the LLM model for this session
                           (/model alone opens an interactive model picker)
   [cyan]/provider ...[/]  show or switch backends: local | openrouter
-                          (e.g. /provider local, /provider openrouter)
+                           (e.g. /provider local, /provider openrouter)
+  [cyan]/theme [name][/]  pick the code-highlight theme (picker if no name)
+                           (the choice is saved for next launch)
   [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
   [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
   [cyan]/quit, Ctrl+Q[/]    save and exit
@@ -217,6 +222,31 @@ class _SessionManager:
         self.session.model = arg
         self.session.loop.model = arg
         return f"switched to model: {arg}"
+
+    def theme(self, arg: str) -> str:
+        """Show or switch the code-highlight theme.
+
+        Returns a message; the caller persists settings (like /model).
+        """
+        from .render import THEME_SUGGESTIONS, available_themes, set_code_theme
+
+        current = self.session.settings.code_theme
+        name = arg.strip().lower()
+        if not name:
+            return (
+                f"current theme: {current} — "
+                f"use /theme <name> (try: {', '.join(THEME_SUGGESTIONS)})"
+            )
+        if name == current:
+            return f"theme is already {current}"
+        if name not in available_themes():
+            return (
+                f"error: unknown theme {arg.strip()!r} — "
+                f"try: {', '.join(THEME_SUGGESTIONS)}"
+            )
+        set_code_theme(name)
+        self.session.settings.code_theme = name
+        return f"switched to theme: {name}"
 
     async def provider(self, arg: str) -> tuple[str, bool]:
         """Switch backends; returns (message, changed).
@@ -429,6 +459,14 @@ class PicoApp(App[None]):
             if changed:
                 self._persist_model(self._mgr.session.model)
             self._update_status_bar()
+        elif cmd.kind == "theme":
+            if not cmd.arg:
+                await self._show_theme_picker()
+            else:
+                msg = self._mgr.theme(cmd.arg)
+                self._write_chat(Text(msg, style="dim"))
+                if msg.startswith("switched to theme:"):
+                    self._persist_theme()
         elif cmd.kind == "fork":
             msg = self._mgr.fork(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
@@ -447,6 +485,18 @@ class PicoApp(App[None]):
         except Exception as exc:
             self._write_chat(
                 Text(f"(could not save model preference: {exc})", style="dim")
+            )
+
+    def _persist_theme(self) -> None:
+        """Remember the user's code-theme choice for the next launch.
+
+        Failures are non-fatal — theme persistence is a convenience.
+        """
+        try:
+            save_settings(self._mgr.session.settings)
+        except Exception as exc:
+            self._write_chat(
+                Text(f"(could not save theme preference: {exc})", style="dim")
             )
 
     async def _show_model_picker(self) -> None:
@@ -473,6 +523,24 @@ class PicoApp(App[None]):
 
         self.push_screen(
             ModelPickerScreen(models, current=self._mgr.session.model),
+            callback=_on_selected,
+        )
+
+    async def _show_theme_picker(self) -> None:
+        """Show the theme picker; the choice applies and persists at once."""
+        from .theme_picker import ThemePickerScreen, theme_options
+
+        current = self._mgr.session.settings.code_theme
+
+        def _on_selected(name: str | None) -> None:
+            if name:
+                msg = self._mgr.theme(name)
+                self._write_chat(Text(msg, style="dim"))
+                if msg.startswith("switched to theme:"):
+                    self._persist_theme()
+
+        self.push_screen(
+            ThemePickerScreen(theme_options(current), current=current),
             callback=_on_selected,
         )
 
@@ -508,6 +576,25 @@ class PicoApp(App[None]):
 
     # -- helpers --
 
+    def _write_log(self, renderable: object) -> None:
+        """Write one segment to the chat log with breathing room.
+
+        Every segment gets a 2-space left indent and a trailing blank line
+        so tool calls, results, and prose read as distinct blocks. Plain
+        strings (clickable thinking/bash lines) are indented by hand to keep
+        RichLog's markup parsing — and click targets — intact.
+        """
+        chat_log = self.query_one("#chat-log", RichLog)
+        if isinstance(renderable, str):
+            indented = "\n".join(
+                f"  {line}" if line.strip() else line
+                for line in renderable.split("\n")
+            )
+            chat_log.write(indented)
+        else:
+            chat_log.write(Padding(cast(ConsoleRenderable, renderable), (0, 0, 0, 2)))
+        chat_log.write(Text(""))
+
     def _write_chat(self, renderable: object) -> None:
         """Append a renderable to the transcript and the chat log.
 
@@ -516,7 +603,7 @@ class PicoApp(App[None]):
         """
         self._finalize_thinking()
         self._transcript.append(renderable)
-        self.query_one("#chat-log", RichLog).write(renderable)
+        self._write_log(renderable)
 
     def _write_thinking(self, segment: ThinkingSegment) -> None:
         """Grow the open thinking segment with a streamed chunk.
@@ -588,7 +675,7 @@ class PicoApp(App[None]):
         self._bash_seq += 1
         segment.id = self._bash_seq
         self._transcript.append(segment)
-        self.query_one("#chat-log", RichLog).write(self._bash_renderable(segment))
+        self._write_log(self._bash_renderable(segment))
 
     def _bash_renderable(self, segment: BashResultSegment) -> object:
         """Collapsed one-line error summary, or the full output when expanded.
@@ -618,11 +705,11 @@ class PicoApp(App[None]):
         chat_log.clear()
         for item in self._transcript:
             if isinstance(item, ThinkingSegment):
-                chat_log.write(self._thinking_renderable(item))
+                self._write_log(self._thinking_renderable(item))
             elif isinstance(item, BashResultSegment):
-                chat_log.write(self._bash_renderable(item))
+                self._write_log(self._bash_renderable(item))
             else:
-                chat_log.write(item)
+                self._write_log(item)
 
     async def action_toggle_thinking(self, block_id: int) -> None:
         """Expand or collapse a thinking block when its line is clicked."""
@@ -691,6 +778,11 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings()
     if args.provider:
         settings.provider = args.provider
+    from .render import set_code_theme
+
+    if not set_code_theme(settings.code_theme or "monokai"):
+        # Hand-edited or stale value: fall back, don't crash the launch.
+        settings.code_theme = "monokai"
     provider = create_provider(settings)
     if (settings.provider or "local").lower() == "openrouter":
         if not os.environ.get(settings.api_key_env, ""):

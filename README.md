@@ -14,7 +14,7 @@ pico_ai ─► pico_core ─► pico_sdk ─► pico_tui
 
 - **Headless CLI** — `pico run "do a task"` completes a coding task end-to-end with a single prompt.
 - **Interactive TUI** — `pico-chat` is a full terminal UI (Textual + Rich) for back-and-forth sessions.
-- **Four core tools** — `read`, `write`, `edit` (search/replace patches), and `bash`.
+- **Five core tools** — `read`, `write`, `edit` (search/replace patches), `bash`, and `todo_write` (session-scoped work tracking for multi-step tasks).
 - **Fully local by default** — models are served by a loopback vLLM server (`http://localhost:8000/v1`): no cloud, no API key, nothing leaves the machine. The OpenRouter cloud backend is kept for testing only.
 - **One-way LLM gateway** — all backends behind one unified "AI call" shape. Responses stream token-by-token.
 - **Reasoning & usage** — thinking blocks are preserved in the transcript; token counts are tracked.

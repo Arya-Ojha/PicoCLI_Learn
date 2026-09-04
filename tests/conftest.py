@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pico_ai.types import AICallRequest, StreamEvent
 from pico_sdk.config import Settings
 from pico_sdk.session import AgentSession
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_settings(tmp_path, monkeypatch):
+    """Redirect the default settings file into tmp_path.
+
+    Regression guard: an old full-flow test once wrote its tmp session_dir
+    into the real ``~/.pico/settings.json``. No test may touch it again.
+    """
+    import pico_sdk.config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "default_settings_path",
+        lambda: tmp_path / "settings.json",
+    )
 
 
 class FakeProvider:

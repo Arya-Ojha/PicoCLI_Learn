@@ -24,6 +24,26 @@ from .session import AgentSession
 _EXIT_CODE_RE = _re.compile(r"\[exit code: (-?\d+)\]")
 
 
+def _format_todo_list(content: str) -> str:
+    """Render a todo_write result as a bare checklist (no tool chrome).
+
+    The active item is wrapped in green ANSI (honoring NO_COLOR); completed
+    and pending items print plain. Marks stay ASCII: stdout on Windows may
+    be cp1252, where [✓]/[•] glyphs crash the write.
+    """
+    use_color = not os.environ.get("NO_COLOR")
+    lines = ["# Todos"]
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("[>]") and use_color:
+            lines.append(f"\x1b[32m{line}\x1b[0m")
+        else:
+            lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
 def format_event(event: LoopEvent) -> str | None:
     """Return the text to print for an event, or ``None`` to print nothing."""
     if event.kind == "text":
@@ -39,6 +59,8 @@ def format_event(event: LoopEvent) -> str | None:
             if event.tool_result.is_error:
                 return f"bash error{suffix}\n"
             return f"bash passed{suffix}\n"
+        if event.tool_result.name == "todo_write" and not event.tool_result.is_error:
+            return _format_todo_list(event.tool_result.content)
     return None
 
 

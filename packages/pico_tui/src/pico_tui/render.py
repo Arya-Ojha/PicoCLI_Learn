@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
+from functools import lru_cache
 
 from rich.console import Group
 from rich.markdown import Markdown
@@ -13,12 +15,46 @@ from rich.text import Text
 
 from pico_sdk import LoopEvent
 
+# Active Pygments theme for code blocks. The app sets this from settings at
+# startup and on /theme; it defaults to monokai.
+CODE_THEME: str = "monokai"
+
+# Curated suggestions shown by /theme; any pygments style is accepted.
+THEME_SUGGESTIONS: tuple[str, ...] = (
+    "monokai",
+    "dracula",
+    "github-dark",
+    "gruvbox-dark",
+    "one-dark",
+    "nord",
+    "vs",
+    "gruvbox-light",
+)
+
+
+@lru_cache(maxsize=1)
+def available_themes() -> frozenset[str]:
+    """Return every code theme pygments ships (lowercased)."""
+    from pygments.styles import get_all_styles  # type: ignore[import-untyped]
+
+    return frozenset(s.lower() for s in get_all_styles())
+
+
+def set_code_theme(name: str) -> bool:
+    """Activate a code theme; return False (leaving CODE_THEME) if unknown."""
+    global CODE_THEME
+    if name.lower() not in available_themes():
+        return False
+    CODE_THEME = name.lower()
+    return True
+
 # Distinct heading colors per tool type.
 _TOOL_COLORS: dict[str, str] = {
     "bash": "green",
     "read": "bright_blue",
     "write": "yellow",
     "edit": "magenta",
+    "todo_write": "cyan",
 }
 
 
@@ -61,6 +97,9 @@ def render_event(event: LoopEvent):  # -> RenderableType (kept loose for mypy si
         return Text(event.thinking, style="dim italic")
     if event.kind == "tool_request" and event.tool_request is not None:
         call = event.tool_request.tool_call
+        if call.name == "todo_write":
+            # The checklist result says it all — the big args dump is noise.
+            return None
         color = _TOOL_COLORS.get(call.name, "cyan")
         if call.name == "bash":
             cmd = call.arguments.get("command", "")
@@ -71,7 +110,10 @@ def render_event(event: LoopEvent):  # -> RenderableType (kept loose for mypy si
                 title_align="left",
             )
         if call.name in ("edit", "write"):
-            return _edit_write_panel(call.name, call.arguments, color)
+            return _diff_group(call.name, call.arguments, color)
+        if call.name == "read":
+            path = str(call.arguments.get("path", ""))
+            return _tool_heading("read", path, color)
         return Panel(
             _pretty_args(call.arguments),
             title=f"[bold {color}]{call.name}[/]",
@@ -89,6 +131,18 @@ def render_event(event: LoopEvent):  # -> RenderableType (kept loose for mypy si
                 border_style=color,
                 title_align="left",
             )
+        if result.name == "todo_write" and not result.is_error:
+            # Checklists are short by nature — show the full list, not a snippet.
+            return Panel(
+                Text(result.content),
+                title=f"[{color}]todos[/]",
+                border_style=color,
+                title_align="left",
+            )
+        if result.name in ("read", "write", "edit"):
+            # The request already showed everything (diff / path) — the
+            # "edited <path>" receipt is noise.
+            return None
         snippet = _truncate(result.content)
         return Panel(
             snippet,
@@ -109,48 +163,85 @@ def _looks_like_markdown(text: str) -> bool:
     )
 
 
-# Keys that carry code content in edit/write tool arguments, in display order.
-_CODE_KEYS = ("old_text", "new_text", "content")
+_REMOVED_BG = "#3a1c1c"
+_ADDED_BG = "#1c3a22"
+
+_EXTENSION_LEXERS = {
+    "py": "python", "js": "javascript", "ts": "typescript",
+    "html": "html", "css": "css", "json": "json", "md": "markdown",
+    "yml": "yaml", "yaml": "yaml", "toml": "toml", "rs": "rust",
+    "go": "go", "java": "java", "c": "c", "cpp": "cpp", "sh": "bash",
+}
 
 
-def _syntax_for(text: str, path: str) -> Syntax:
-    """Render text as code with the language guessed from the file path."""
-    lexer = None
-    if "." in path.rsplit("/", 1)[-1] and path.rsplit("/", 1)[-1].split(".")[-1]:
-        ext = path.rsplit(".", 1)[-1].lower()
-        ext_map = {
-            "py": "python", "js": "javascript", "ts": "typescript",
-            "html": "html", "css": "css", "json": "json", "md": "markdown",
-            "yml": "yaml", "yaml": "yaml", "toml": "toml", "rs": "rust",
-            "go": "go", "java": "java", "c": "c", "cpp": "cpp", "sh": "bash",
-        }
-        lexer = ext_map.get(ext)
+def _lexer_for(path: str) -> str:
+    """Guess the code lexer from the file extension (VS Code-style colors)."""
+    filename = path.rsplit("/", 1)[-1]
+    if "." in filename and (ext := filename.split(".")[-1].lower()):
+        if lexer := _EXTENSION_LEXERS.get(ext):
+            return lexer
+    return "text"
+
+
+def _code_block(code: str, lexer: str, background: str) -> Syntax:
+    """A syntax-highlighted block whose background fills the full line width."""
     return Syntax(
-        text,
-        lexer or "text",
+        code,
+        lexer,
+        theme=CODE_THEME,
         word_wrap=True,
-        theme="ansi_dark",
-        background_color="default",
+        background_color=background,
     )
 
 
-def _edit_write_panel(name: str, arguments: dict, color: str) -> Panel:
-    """Format an edit/write request: path in the title, fields as code blocks."""
-    path = str(arguments.get("path", ""))
+def _diff_parts(old: str, new: str, lexer: str) -> list:
+    """Align old vs new lines: red removals, green additions, dim context.
+
+    Removed/added hunks render as syntax-highlighted blocks with full-width
+    backgrounds; unchanged lines stay plain dim text.
+    """
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
     parts: list = []
-    for key in _CODE_KEYS:
-        if key in arguments and arguments[key] != "":
-            parts.append(Text(f"── {key} ", style=f"bold {color}"))
-            parts.append(_syntax_for(str(arguments[key]), path))
-    if not parts:  # no code fields (e.g. a delete or move) — show args
-        parts.append(_pretty_args(arguments))
-    title = f"[bold {color}]{name}[/] {path}" if path else f"[bold {color}]{name}[/]"
-    return Panel(
-        Group(*parts),
-        title=title,
-        border_style=color,
-        title_align="left",
-    )
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for line in old_lines[i1:i2]:
+                parts.append(Text("  " + line, style="dim"))
+        if tag in ("delete", "replace"):
+            removed = "\n".join("- " + line for line in old_lines[i1:i2])
+            parts.append(_code_block(removed, lexer, _REMOVED_BG))
+        if tag in ("insert", "replace"):
+            added = "\n".join("+ " + line for line in new_lines[j1:j2])
+            parts.append(_code_block(added, lexer, _ADDED_BG))
+    if not parts:
+        parts.append(Text("(no changes)", style="dim"))
+    return parts
+
+
+def _tool_heading(name: str, path: str, color: str) -> Text:
+    """A borderless heading: bold tool name in its color, plain path."""
+    heading = Text()
+    heading.append(name, style=f"bold {color}")
+    if path:
+        heading.append(f" {path}")
+    return heading
+
+
+def _diff_group(name: str, arguments: dict, color: str) -> Group:
+    """Format an edit/write request as a bare diff group (no panel border).
+
+    ``edit`` aligns old_text → new_text hunk by hunk; ``write`` treats the
+    whole content as added (there is no old text for a fresh file).
+    """
+    path = str(arguments.get("path", ""))
+    if name == "edit":
+        old = str(arguments.get("old_text", ""))
+        new = str(arguments.get("new_text", ""))
+    else:
+        old, new = "", str(arguments.get("content", ""))
+    header = _tool_heading(name, path, color)
+    return Group(header, *_diff_parts(old, new, _lexer_for(path)))
 
 
 def _pretty_args(arguments: dict) -> str:

@@ -28,6 +28,8 @@ def test_parse_line_commands():
     assert parse_line("/provider") == Command("provider", "")
     assert parse_line("/provider local") == Command("provider", "local")
     assert parse_line("/provider openrouter") == Command("provider", "openrouter")
+    assert parse_line("/theme") == Command("theme", "")
+    assert parse_line("/theme dracula") == Command("theme", "dracula")
 
 
 def test_render_event_text():
@@ -39,6 +41,93 @@ def test_render_event_markdown_has_no_raw_stars():
     event = LoopEvent(kind="text", text="There are **3 files** and **2 directories**")
     assert "**" not in _render_text(event)
     assert "3 files" in _render_text(event)
+
+
+def test_todo_write_request_is_hidden():
+    from pico_core.session import ToolRequestPayload
+    from pico_ai.types import ToolCall
+
+    event = LoopEvent(
+        kind="tool_request",
+        tool_request=ToolRequestPayload(
+            tool_call=ToolCall(
+                id="c1",
+                name="todo_write",
+                arguments={"todos": [{"content": "x", "status": "pending"}]},
+            )
+        ),
+    )
+    assert render_event(event) is None
+
+
+def _request_event(name: str, arguments: dict) -> LoopEvent:
+    from pico_ai.types import ToolCall
+    from pico_core.session import ToolRequestPayload
+
+    return LoopEvent(
+        kind="tool_request",
+        tool_request=ToolRequestPayload(
+            tool_call=ToolCall(id="c1", name=name, arguments=arguments)
+        ),
+    )
+
+
+def test_edit_request_renders_red_green_diff():
+    from rich.syntax import Syntax
+
+    event = _request_event(
+        "edit", {"path": "a.py", "old_text": "x = 1", "new_text": "x = 2"}
+    )
+    text = _render_text(event)
+    assert "- x = 1" in text
+    assert "+ x = 2" in text
+    parts = render_event(event)._renderables
+    blocks = [p for p in parts if isinstance(p, Syntax)]
+    assert blocks  # code stays syntax-highlighted, not plain text
+    red = [b for b in blocks if b.background_color == "#3a1c1c"]
+    green = [b for b in blocks if b.background_color == "#1c3a22"]
+    assert any("- x = 1" in b.code for b in red)
+    assert any("+ x = 2" in b.code for b in green)
+
+
+def test_write_request_renders_all_green():
+    from rich.syntax import Syntax
+
+    event = _request_event("write", {"path": "b.py", "content": "y = 3"})
+    text = _render_text(event)
+    assert "+ y = 3" in text
+    assert "- y = 3" not in text
+    parts = render_event(event)._renderables
+    blocks = [p for p in parts if isinstance(p, Syntax)]
+    assert blocks
+    assert all(b.background_color == "#1c3a22" for b in blocks)
+
+
+def test_read_write_edit_have_no_border_or_result():
+    from rich.panel import Panel
+    from rich.text import Text
+
+    from pico_core.session import ToolResultPayload
+
+    read_req = _request_event("read", {"path": "a.py"})
+    rendered = render_event(read_req)
+    assert isinstance(rendered, Text)
+    assert not isinstance(rendered, Panel)
+    assert "a.py" in rendered.plain
+
+    edit_req = _request_event(
+        "edit", {"path": "a.py", "old_text": "x = 1", "new_text": "x = 2"}
+    )
+    assert not isinstance(render_event(edit_req), Panel)
+
+    for name in ("read", "write", "edit"):
+        result = LoopEvent(
+            kind="tool_result",
+            tool_result=ToolResultPayload(
+                tool_call_id="c1", name=name, content=f"{name} receipt"
+            ),
+        )
+        assert render_event(result) is None
 
 
 def test_thinking_line_is_single_click_target():
@@ -213,3 +302,93 @@ async def test_manager_emits_segment_for_failed_bash_only():
     )
     assert isinstance(captured[0], BashResultSegment)
     assert isinstance(captured[1], Panel)
+
+
+def test_theme_switch_show_and_reject(tmp_path, monkeypatch):
+    from conftest import FakeProvider, make_session
+    from pico_tui import render as render_module
+    from pico_tui.app import _SessionManager
+
+    monkeypatch.setattr(render_module, "CODE_THEME", "monokai")
+    mgr = _SessionManager(make_session(FakeProvider([]), tmp_path))
+    assert "monokai" in mgr.theme("")
+    assert mgr.theme("dracula") == "switched to theme: dracula"
+    assert render_module.CODE_THEME == "dracula"
+    assert mgr.session.settings.code_theme == "dracula"
+    assert mgr.theme("not-a-theme").startswith("error:")
+    assert render_module.CODE_THEME == "dracula"  # unchanged on bad name
+
+
+def test_set_code_theme_validation(monkeypatch):
+    from pico_tui import render as render_module
+
+    monkeypatch.setattr(render_module, "CODE_THEME", "monokai")
+    assert render_module.set_code_theme("dracula") is True
+    assert render_module.CODE_THEME == "dracula"
+    assert render_module.set_code_theme("bogus") is False
+    assert render_module.CODE_THEME == "dracula"
+
+
+async def test_theme_command_persists_choice(tmp_path, monkeypatch):
+    import pico_tui.app as app_module
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import PicoApp, _SessionManager
+    from pico_tui.commands import Command
+
+    saved: dict = {}
+    monkeypatch.setattr(
+        app_module, "save_settings", lambda s: saved.update(s.model_dump())
+    )
+    app = PicoApp(_SessionManager(make_session(FakeProvider([]), tmp_path)))
+    async with app.run_test():
+        await app._dispatch_command(Command("theme", "dracula"))
+        assert saved.get("code_theme") == "dracula"
+
+
+def test_theme_options_marks_current_first_if_exotic():
+    from pico_tui.theme_picker import format_theme_option, theme_options
+
+    options = theme_options("monokai")
+    assert "monokai" in options
+    assert "dracula" in options
+    assert theme_options("nord-light") == ["nord-light", *theme_options("monokai")]
+    assert format_theme_option("dracula", "dracula").endswith("current[/]")
+    assert "current" not in format_theme_option("dracula", "monokai")
+
+
+async def test_theme_picker_selects_highlighted(tmp_path):
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import PicoApp, _SessionManager
+    from pico_tui.theme_picker import ThemePickerScreen
+
+    app = PicoApp(_SessionManager(make_session(FakeProvider([]), tmp_path)))
+    chosen: list = []
+    async with app.run_test() as pilot:
+        app.push_screen(
+            ThemePickerScreen(["monokai", "dracula"], current="monokai"),
+            callback=chosen.append,
+        )
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert chosen == ["monokai"]
+
+
+async def test_write_log_indents_and_separates_segments(tmp_path):
+    from conftest import FakeProvider, make_session
+    from rich.text import Text
+    from textual.widgets import RichLog
+
+    from pico_tui.app import PicoApp
+
+    app = PicoApp(make_session(FakeProvider([]), tmp_path))
+    async with app.run_test():
+        app._write_log(Text("hello"))
+        app._write_log("[@click=app.toggle_bash(1)][red]bash error...[/][/]")
+        log = app.query_one("#chat-log", RichLog)
+        body = "\n".join(strip.text for strip in log.lines)
+        assert "  hello" in body  # left-indented renderable
+        # Markup still parsed (click target intact), visible text indented.
+        assert "  bash error..." in body
+        assert "[@click" not in body
+        assert body.count("\n\n") >= 2  # blank line after each segment
