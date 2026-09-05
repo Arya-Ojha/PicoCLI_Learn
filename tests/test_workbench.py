@@ -3,11 +3,11 @@
 from pathlib import Path
 
 from pico_core.session import (
-    KbHitPayload,
-    OcrPagePayload,
-    RouterDecisionPayload,
     Session,
     UserPayload,
+    kb_hit_payload,
+    ocr_page_payload,
+    router_decision_payload,
 )
 from pico_sdk.corpus import index_corpus, search
 from pico_sdk.deliverables import emit_approval_note, emit_sheet
@@ -46,8 +46,8 @@ def test_approval_note_and_sheet_emit(tmp_path: Path):
 def test_format_trace_projection():
     session = Session()
     root = session.append(None, UserPayload(content="hi"))
-    session.append(root.id, RouterDecisionPayload(capability="ocr", model_id="m", reason="r"))
-    session.append(session.active_leaf_id, KbHitPayload(doc="d", chunk="c", page="p"))
-    session.append(session.active_leaf_id, OcrPagePayload(page=1, png="p.png", text="t"))
+    session.append(root.id, router_decision_payload("ocr", "m", "r"))
+    session.append(session.active_leaf_id, kb_hit_payload("d", "c", "p"))
+    session.append(session.active_leaf_id, ocr_page_payload(1, "p.png", "t"))
     text = format_trace(session)
     assert "router ocr -> m" in text and "kb d c p" in text and "ocr p1" in text

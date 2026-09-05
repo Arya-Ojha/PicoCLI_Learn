@@ -60,10 +60,52 @@ class AssistantPayload(BaseModel):
 
 
 class ToolRequestPayload(BaseModel):
-    """A request to run a tool."""
+    """A request to run a tool, or a trace subtype when ``subtype`` is set."""
 
     kind: Literal["tool_request"] = "tool_request"
     tool_call: ToolCall
+    subtype: str | None = None
+    detail: dict = Field(default_factory=dict)
+
+
+TRACE_SUBTYPES = frozenset({"router_decision", "kb_hit", "ocr_page"})
+
+
+def make_trace_payload(subtype: str, name: str, detail: dict) -> ToolRequestPayload:
+    """Build a trace-only ``tool_request`` subtype node payload."""
+    return ToolRequestPayload(
+        tool_call=ToolCall(id=new_id(), name=name, arguments=dict(detail)),
+        subtype=subtype,
+        detail=dict(detail),
+    )
+
+
+def router_decision_payload(capability: str, model_id: str, reason: str) -> ToolRequestPayload:
+    """Build a ``router_decision`` trace subtype payload."""
+    return make_trace_payload(
+        "router_decision",
+        "router",
+        {"capability": capability, "model_id": model_id, "reason": reason},
+    )
+
+
+def kb_hit_payload(doc: str, chunk: str, page: str) -> ToolRequestPayload:
+    """Build a ``kb_hit`` trace subtype payload."""
+    return make_trace_payload("kb_hit", "kb", {"doc": doc, "chunk": chunk, "page": page})
+
+
+def ocr_page_payload(page: int, png: str, text: str) -> ToolRequestPayload:
+    """Build an ``ocr_page`` trace subtype payload."""
+    return make_trace_payload(
+        "ocr_page", "ocr", {"page": page, "png": png, "text": text}
+    )
+
+
+def denial_payload(tool_name: str, reason: str) -> ToolResultPayload:
+    """Build a traced cwd-jail denial result (``is_error=True``)."""
+    return ToolResultPayload(
+        tool_call_id=new_id(), name=tool_name, content=reason, is_error=True
+    )
 
 
 class ToolResultPayload(BaseModel):
@@ -83,50 +125,24 @@ class CompactionSummaryPayload(BaseModel):
     summary: str
 
 
-class RouterDecisionPayload(BaseModel):
-    """A router decision: which model was picked for a capability and why."""
-
-    kind: Literal["router_decision"] = "router_decision"
-    capability: str = ""
-    model_id: str = ""
-    reason: str = ""
-
-
-class KbHitPayload(BaseModel):
-    """A knowledge-base hit: a cited span returned by kb.search."""
-
-    kind: Literal["kb_hit"] = "kb_hit"
-    doc: str = ""
-    chunk: str = ""
-    page: str = ""
-
-
-class OcrPagePayload(BaseModel):
-    """One document page read: PNG reference plus extracted text."""
-
-    kind: Literal["ocr_page"] = "ocr_page"
-    page: int = 1
-    png: str = ""
-    text: str = ""
-
-
 Payload = Annotated[
     UserPayload
     | AssistantPayload
     | ToolRequestPayload
     | ToolResultPayload
-    | CompactionSummaryPayload
-    | RouterDecisionPayload
-    | KbHitPayload
-    | OcrPagePayload,
+    | CompactionSummaryPayload,
     Field(discriminator="kind"),
 ]
 
 
 def trace_events(session: "Session") -> list["Node"]:
-    """Return the live trace projection: subtype nodes on the active branch."""
-    kinds = {"router_decision", "kb_hit", "ocr_page", "tool_request", "tool_result"}
-    return [n for n in session.active_branch() if n.payload.kind in kinds]
+    """Return the live trace projection: tool activity + trace subtypes."""
+    out: list["Node"] = []
+    for node in session.active_branch():
+        payload = node.payload
+        if isinstance(payload, (ToolRequestPayload, ToolResultPayload)):
+            out.append(node)
+    return out
 
 
 class Node(BaseModel):

@@ -39,11 +39,13 @@ class AgentSession:
         session_id: str | None = None,
         session: Session | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        registry: list | None = None,
     ) -> None:
         self.settings = settings or load_settings()
         self.model = model or self.settings.model
         self.working_dir = Path(working_dir) if working_dir else Path.cwd()
         self.extensions = ExtensionManager()
+        self.registry = registry if registry is not None else self._load_registry()
 
         self.system_prompt = system_prompt
 
@@ -61,7 +63,27 @@ class AgentSession:
             context_window=self.settings.context_window,
             reserve_tokens=self.settings.reserve_tokens,
             hooks=self.extensions,
+            router_fn=self._router_fn,
         )
+
+    def _load_registry(self) -> list:
+        from .router import load_registry
+
+        try:
+            return load_registry(Path(self.settings.models_file).expanduser())
+        except OSError:
+            return []
+
+    def _router_fn(self, capability: str) -> tuple[str, str] | None:
+        if not self.registry:
+            return None
+        from .router import route
+
+        if self.model:
+            return self.model, f"pinned to {self.model}"
+        model_id, reason = route(capability, self.registry, default=self.model)
+        self.model = model_id
+        return model_id, reason
 
     @property
     def provider(self) -> Any:
@@ -103,13 +125,13 @@ class AgentSession:
 
     # -- running ------------------------------------------------------------
 
-    async def run(self, prompt: str) -> RunResult:
+    async def run(self, prompt: str, capability: str = "") -> RunResult:
         self.loop.system_prompt = self.system_prompt
-        return await self.loop.run(prompt)
+        return await self.loop.run(prompt, capability=capability)
 
-    def stream(self, prompt: str) -> AsyncIterator[LoopEvent]:
+    def stream(self, prompt: str, capability: str = "") -> AsyncIterator[LoopEvent]:
         self.loop.system_prompt = self.system_prompt
-        return self.loop.stream(prompt)
+        return self.loop.stream(prompt, capability=capability)
 
     def fork(self, node_id: str) -> None:
         self.session.fork(node_id)

@@ -103,6 +103,7 @@ class AgentLoop:
         reserve_tokens: int = 16_384,
         summarizer: Summarizer | None = None,
         hooks: HookSink | None = None,
+        router_fn: Callable[[str], tuple[str, str] | None] | None = None,
     ) -> None:
         self.provider = provider
         self.session = session
@@ -113,16 +114,34 @@ class AgentLoop:
         self.reserve_tokens = reserve_tokens
         self._summarizer = summarizer or self._default_summarizer
         self._hooks = hooks
+        self.router_fn = router_fn
         self.state = AgentState.IDLE
         self._started = False
 
+    def _apply_router(self, capability: str) -> None:
+        """Pick the model for ``capability`` and trace the decision."""
+        if not capability or self.router_fn is None:
+            return
+        resolved = self.router_fn(capability)
+        if resolved is None:
+            return
+        model_id, reason = resolved
+        if model_id:
+            self.model = model_id
+        from .session import router_decision_payload
+
+        self.session.append(
+            self.session.active_leaf_id,
+            router_decision_payload(capability, self.model, reason),
+        )
+
     # -- public -------------------------------------------------------------
 
-    async def run(self, prompt: str) -> RunResult:
+    async def run(self, prompt: str, capability: str = "") -> RunResult:
         """Run the full loop and return the final result."""
         text_parts: list[str] = []
         try:
-            async for event in self.stream(prompt):
+            async for event in self.stream(prompt, capability=capability):
                 if event.kind == "text":
                     text_parts.append(event.text)
         except Exception as exc:  # noqa: BLE001 - surface as error state
@@ -137,7 +156,7 @@ class AgentLoop:
             text="".join(text_parts), state=self.state, session=self.session
         )
 
-    async def stream(self, prompt: str) -> AsyncIterator[LoopEvent]:
+    async def stream(self, prompt: str, capability: str = "") -> AsyncIterator[LoopEvent]:
         """Run the loop, yielding observable events as they happen."""
         self._set_state(AgentState.IDLE)
         yield self._state_event()
@@ -146,6 +165,7 @@ class AgentLoop:
             self._started = True
 
         self.session.append(self.session.active_leaf_id, UserPayload(content=prompt))
+        self._apply_router(capability)
 
         while True:
             if self._needs_compaction():
@@ -216,6 +236,8 @@ class AgentLoop:
                 messages.append(Message(role="assistant", content=payload.text))
                 last_assistant = len(messages) - 1
             elif isinstance(payload, ToolRequestPayload):
+                if payload.subtype is not None:
+                    continue
                 if last_assistant >= 0:
                     messages[last_assistant].tool_calls.append(payload.tool_call)
             elif isinstance(payload, ToolResultPayload):

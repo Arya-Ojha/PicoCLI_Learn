@@ -5,9 +5,9 @@ from pico_core.session import (
     UserPayload,
     AssistantPayload,
     AssistantBlock,
-    RouterDecisionPayload,
-    KbHitPayload,
-    OcrPagePayload,
+    kb_hit_payload,
+    ocr_page_payload,
+    router_decision_payload,
     trace_events,
 )
 
@@ -41,9 +41,10 @@ def test_save_load_round_trip(tmp_path):
 def test_trace_subtypes_round_trip_and_projection(tmp_path):
     session = Session()
     root = session.append(None, UserPayload(content="inspect report"))
-    r = session.append(root.id, RouterDecisionPayload(capability="ocr", model_id="nuextract", reason="match"))
-    k = session.append(r.id, KbHitPayload(doc="SOP-3.2", chunk="c1", page="p14"))
-    o = session.append(k.id, OcrPagePayload(page=1, png="p1.png", text="finding"))
+    r = session.append(root.id, router_decision_payload("ocr", "nuextract", "match"))
+    k = session.append(r.id, kb_hit_payload("SOP-3.2", "c1", "p14"))
+    o = session.append(k.id, ocr_page_payload(1, "p1.png", "finding"))
+    assert r.payload.subtype == "router_decision"
     assert [n.id for n in trace_events(session)] == [r.id, k.id, o.id]
     path = tmp_path / "t.jsonl"
     session.save(path)
