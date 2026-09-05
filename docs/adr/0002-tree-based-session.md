@@ -5,7 +5,7 @@
 
 ## Context
 
-A coding session needs a persistence model. The obvious choice is a linear transcript, but Pi's tree model offers rollback and parallel timelines.
+A work session needs a persistence model. The obvious choice is a linear transcript, but a tree model offers rollback and parallel timelines.
 
 ## Decision
 

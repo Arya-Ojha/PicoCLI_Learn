@@ -1,7 +1,7 @@
 [project]
 name = "pico"
 version = "0.1.0"
-description = "A Python CLI coding agent inspired by Pi's modular architecture."
+description = "Self-hosted air-gapped AI workbench for sensitive knowledge work."
 requires-python = ">=3.12"
 dependencies = ["pico-sdk", "pico-tui"]
 

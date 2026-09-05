@@ -7,7 +7,7 @@ States::
           compacting          (triggered by token threshold)
     error                     (reachable from any state)
 
-Yolo mode means there is no approval/confirmation state.
+The loop runs autonomously: there is no approval/confirmation state.
 """
 
 from __future__ import annotations

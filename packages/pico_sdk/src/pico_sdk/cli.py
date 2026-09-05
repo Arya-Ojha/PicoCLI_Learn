@@ -65,7 +65,7 @@ def format_event(event: LoopEvent) -> str | None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pico", description="A headless coding agent.")
+    parser = argparse.ArgumentParser(prog="pico", description="Self-hosted workbench runner.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="Run the agent on a prompt.")
@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--no-bash",
         action="store_true",
-        help="Disable unsandboxed bash (on by default).",
+        help="Disable bash (cwd-jailed, on by default).",
     )
     run.add_argument("--model", default=None, help="Override the configured model.")
     run.add_argument(

@@ -3,7 +3,7 @@
 from rich.console import Console
 
 from pico_core.fsm import LoopEvent
-from pico_tui.commands import Command, parse_line
+from pico_tui.commands import Command, Prompt, parse_line
 from pico_tui.render import render_event
 
 _console = Console(force_terminal=True, color_system=None, width=200, height=100)
@@ -28,8 +28,8 @@ def test_parse_line_commands():
     assert parse_line("/provider") == Command("provider", "")
     assert parse_line("/provider local") == Command("provider", "local")
     assert parse_line("/provider openrouter") == Command("provider", "openrouter")
-    assert parse_line("/theme") == Command("theme", "")
-    assert parse_line("/theme dracula") == Command("theme", "dracula")
+    # No /theme command: theme switching lives in the Ctrl+P palette.
+    assert parse_line("/theme dracula") == Prompt("/theme dracula")
 
 
 def test_render_event_text():
@@ -329,11 +329,10 @@ def test_set_code_theme_validation(monkeypatch):
     assert render_module.CODE_THEME == "dracula"
 
 
-async def test_theme_command_persists_choice(tmp_path, monkeypatch):
+async def test_theme_choice_persists(tmp_path, monkeypatch):
     import pico_tui.app as app_module
     from conftest import FakeProvider, make_session
     from pico_tui.app import PicoApp, _SessionManager
-    from pico_tui.commands import Command
 
     saved: dict = {}
     monkeypatch.setattr(
@@ -341,7 +340,9 @@ async def test_theme_command_persists_choice(tmp_path, monkeypatch):
     )
     app = PicoApp(_SessionManager(make_session(FakeProvider([]), tmp_path)))
     async with app.run_test():
-        await app._dispatch_command(Command("theme", "dracula"))
+        app._apply_theme_choice("dracula")
+        assert saved.get("code_theme") == "dracula"
+        app._apply_theme_choice(None)  # cancel: nothing more saved
         assert saved.get("code_theme") == "dracula"
 
 
@@ -372,6 +373,41 @@ async def test_theme_picker_selects_highlighted(tmp_path):
         await pilot.press("enter")
         await pilot.pause()
     assert chosen == ["monokai"]
+
+
+async def test_app_theme_restores_saved(tmp_path):
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import PicoApp, _SessionManager
+
+    session = make_session(FakeProvider([]), tmp_path)
+    session.settings.app_theme = "dracula"
+    app = PicoApp(_SessionManager(session))
+    async with app.run_test():
+        assert app.theme == "dracula"
+
+
+async def test_app_theme_change_persists(tmp_path):
+    from conftest import FakeProvider, make_session
+    from pico_sdk.config import load_settings
+    from pico_tui.app import PicoApp, _SessionManager
+
+    app = PicoApp(_SessionManager(make_session(FakeProvider([]), tmp_path)))
+    async with app.run_test() as pilot:
+        assert app.theme == "textual-dark"
+        app.theme = "monokai"
+        await pilot.pause()
+        assert load_settings().app_theme == "monokai"
+
+
+async def test_app_theme_unknown_falls_back(tmp_path):
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import PicoApp, _SessionManager
+
+    session = make_session(FakeProvider([]), tmp_path)
+    session.settings.app_theme = "bogus-nope"
+    app = PicoApp(_SessionManager(session))
+    async with app.run_test():
+        assert app.theme == "textual-dark"
 
 
 async def test_write_log_indents_and_separates_segments(tmp_path):

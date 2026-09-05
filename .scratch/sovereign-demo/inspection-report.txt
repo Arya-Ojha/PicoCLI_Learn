@@ -1,0 +1,9 @@
+Flange joint FF-12 shows weepage at 3 o'clock position.
+
+Gasket compression uneven. Torque records missing for 2 bolts.
+
+Recommendation: retorque to 40 Nm sequence, re-inspect in 7 days.
+
+Finding two: coating damage 15cm near support S-4, no metal loss.
+
+Finding three: drain valve stiff, needs grease and operate twice.

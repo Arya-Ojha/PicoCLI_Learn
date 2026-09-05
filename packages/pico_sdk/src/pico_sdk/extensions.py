@@ -1,4 +1,4 @@
-"""Extension binding: register tools/providers, lifecycle hooks, plugin loading."""
+"""Tool registration: register tools/providers, lifecycle hooks, tool loading."""
 
 from __future__ import annotations
 
@@ -65,12 +65,12 @@ class ExtensionManager:
             "tool.after.*", name=name, arguments=arguments, result=result
         )
 
-    # -- plugin loading -----------------------------------------------------
+    # -- tool loading -------------------------------------------------------
 
     def load_plugins(self, directory: Path | str, session: Any) -> None:
         """Import every ``*.py`` file in ``directory`` and call its ``register``.
 
-        Each plugin module may define ``register(session)``, which receives the
+        Each tool module may define ``register(session)``, which receives the
         agent session and can call ``register_tool`` / ``register_provider`` /
         ``on`` on it.
         """

@@ -1,23 +1,85 @@
-# Context
+# Pico Sovereign Workbench
 
-The domain vocabulary for **pico**, a Python CLI coding agent inspired by Pi's modular, plugin-driven architecture.
+A self-hosted, air-gapped workbench for routine but sensitive knowledge work. All models, tools, and documents run on the organization's own hardware; nothing leaves the premises.
 
-## Glossary
+## Language
 
-- **Agent** — the autonomous coding agent itself. It runs autonomously (informally, *yolo mode*): it acts on its own, without asking for approval at each step.
-- **Session** — one persisted coding session, represented as a tree of nodes.
-- **Node** — an immutable, append-only unit of event data in a session. Each node carries an id, a pointer to its parent, a timestamp, and a payload. Once written, a node is never edited or deleted — only built upon.
-- **Payload** — the content of a node: a **user** message, an **assistant** message, a **tool request**, a **tool result**, or a **compaction summary**.
-- **Branch** — a timeline: the sequence of nodes from the root to a leaf. A session can hold many parallel branches.
-- **Fork** — rewinding to an earlier node and starting a new branch from it (for example, after a change that broke the codebase).
-- **Turn** — one user message plus the agent's full response to it, including any tool requests it makes.
-- **Tool** — a capability the agent can invoke. The core tools are **read**, **write**, **edit**, **bash**, and **todo_write** (session-scoped work tracking for multi-step tasks).
-- **Tool request** — the agent asking to run a tool.
-- **Tool result** — the output returned by running a tool.
-- **Compaction** — summarising older context so the session fits within the model's context window.
-- **Context window** — the token budget of the model in use.
-- **Reserve tokens** — the portion of the context window held back for the model's own response.
-- **Provider** — an LLM backend. Every provider is reached through a single gateway and exposed as one unified **AI call**. The default is **local**: a loopback vLLM server (`http://localhost:8000/v1`), so everything runs on this machine with no API key. The OpenRouter cloud backend is kept for testing only and is slated for removal.
-- **AI call** — the unified request/response shape used to talk to any provider.
-- **Headless** — running the agent programmatically (as a library) with no terminal UI.
-- **Extension** (also **plugin**) — a modular capability registered into the agent: a tool, a provider, or a UI widget. Extensions are loaded from a plugins directory or registered explicitly.
+### Work execution
+
+**Agent**:
+The workbench agent that plans multi-step tasks and calls local tools to produce deliverables.
+_Avoid_: chatbot, assistant
+
+**Cwd-jail**:
+The folder the agent was opened in; the agent may only read, write, or execute inside it.
+_Avoid_: sandbox, container, Docker
+
+**Turn**:
+One user message plus the agent's full response, including any tool calls it makes.
+_Avoid_: iteration, step
+
+**Tool**:
+A local capability the agent can invoke (file access, document emit, knowledge search, document read).
+_Avoid_: plugin, extension, function
+
+**Deliverable**:
+A real work product emitted as a file: Word, Excel, PowerPoint, working code, or a calculation with steps shown.
+_Avoid_: chat reply, draft text
+
+**Approval note**:
+The Word deliverable drafted from inspection findings plus knowledge-base citations.
+_Avoid_: report, letter
+
+### Models
+
+**Router**:
+Picks the model for each task from the registry by capability label.
+_Avoid_: dispatcher, orchestrator, judge
+
+**Registry**:
+The `models.yaml` list of usable models with their capabilities and VRAM cost.
+_Avoid_: model list, config
+
+**Capability**:
+A static task label (`code`, `summary`, `vision`, `ocr`) assigned to a model in the registry.
+_Avoid_: skill, modality
+
+**Testing-only provider**:
+The OpenRouter cloud backend, kept for routing tests on small GPUs and slated for removal.
+_Avoid_: cloud model, fallback
+
+### Knowledge and documents
+
+**Corpus**:
+The folder-mounted set of manuals, SOPs, and past correspondence the knowledge base indexes.
+_Avoid_: knowledge base, DMS, database
+
+**Inspection finding**:
+A structured fact extracted from a scanned report or drawing, with its source page retained.
+_Avoid_: OCR text, summary
+
+### Provenance
+
+**Session**:
+One persisted unit of work, represented as a tree of nodes.
+_Avoid_: conversation, chat
+
+**Node**:
+An immutable, append-only unit of event data in a session. Once written it is never edited or deleted.
+_Avoid_: message, event
+
+**Branch**:
+A timeline: the sequence of nodes from the root to a leaf.
+_Avoid_: thread, history
+
+**Fork**:
+Rewinding to an earlier node and starting a new branch from it.
+_Avoid_: rollback, undo
+
+**Trace**:
+The live projection of a session's tool subtypes (`router.decision`, `kb.hit`, `ocr.page`) shown in the Tracing tab.
+_Avoid_: log, span export
+
+**Offline run**:
+A run with no external network (venue Wi-Fi off); the proof of the sovereign claim.
+_Avoid_: air-gap certificate, firewall attestation

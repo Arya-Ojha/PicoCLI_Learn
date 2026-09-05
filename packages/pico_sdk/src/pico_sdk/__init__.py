@@ -1,4 +1,4 @@
-"""pico_sdk: the headless library API and the extension/plugin binding."""
+"""pico_sdk: the workbench library API and tool/provider registration."""
 
 from pico_core.fsm import AgentState, LoopEvent, RunResult
 from pico_core.session import (

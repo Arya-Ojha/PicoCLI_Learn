@@ -1,4 +1,4 @@
-"""The headless library API: ``AgentSession``."""
+"""The workbench library API: ``AgentSession``."""
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ from .config import Settings, load_settings
 from .extensions import ExtensionManager
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are pico, a coding agent. You can read, write, and edit files, and run "
-    "bash commands. For tasks with 3+ steps, plan with todo_write first, keep "
+    "You are pico, a self-hosted workbench agent. You work only inside the opened "
+    "folder (cwd-jail) and produce real deliverables with knowledge-base citations. "
+    "For tasks with 3+ steps, plan with todo_write first, keep "
     "exactly one item in_progress, and mark items completed as you finish them. "
     "Work autonomously to complete the user's task, then report what you did."
 )
@@ -25,7 +26,7 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 class AgentSession:
-    """A headless agent session: provider + tools + session tree + extensions."""
+    """A workbench agent session: provider + tools + session tree + tool registration."""
 
     def __init__(
         self,
@@ -116,7 +117,7 @@ class AgentSession:
     async def compact(self, instructions: str = "") -> None:
         await self.loop.compact(instructions)
 
-    # -- extension binding --------------------------------------------------
+    # -- tool/provider registration -------------------------------------------
 
     def register_tool(self, tool: Tool) -> None:
         self.tools.register(tool)

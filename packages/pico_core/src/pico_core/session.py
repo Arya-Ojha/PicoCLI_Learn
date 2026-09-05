@@ -83,14 +83,50 @@ class CompactionSummaryPayload(BaseModel):
     summary: str
 
 
+class RouterDecisionPayload(BaseModel):
+    """A router decision: which model was picked for a capability and why."""
+
+    kind: Literal["router_decision"] = "router_decision"
+    capability: str = ""
+    model_id: str = ""
+    reason: str = ""
+
+
+class KbHitPayload(BaseModel):
+    """A knowledge-base hit: a cited span returned by kb.search."""
+
+    kind: Literal["kb_hit"] = "kb_hit"
+    doc: str = ""
+    chunk: str = ""
+    page: str = ""
+
+
+class OcrPagePayload(BaseModel):
+    """One document page read: PNG reference plus extracted text."""
+
+    kind: Literal["ocr_page"] = "ocr_page"
+    page: int = 1
+    png: str = ""
+    text: str = ""
+
+
 Payload = Annotated[
     UserPayload
     | AssistantPayload
     | ToolRequestPayload
     | ToolResultPayload
-    | CompactionSummaryPayload,
+    | CompactionSummaryPayload
+    | RouterDecisionPayload
+    | KbHitPayload
+    | OcrPagePayload,
     Field(discriminator="kind"),
 ]
+
+
+def trace_events(session: "Session") -> list["Node"]:
+    """Return the live trace projection: subtype nodes on the active branch."""
+    kinds = {"router_decision", "kb_hit", "ocr_page", "tool_request", "tool_result"}
+    return [n for n in session.active_branch() if n.payload.kind in kinds]
 
 
 class Node(BaseModel):

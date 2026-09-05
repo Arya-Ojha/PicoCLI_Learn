@@ -1,6 +1,6 @@
-"""The four core tools: read, write, edit, bash.
+"""The core local tools: read, write, edit, bash.
 
-Each tool operates against a working directory. Bash runs unsandboxed and is
+Each tool operates inside the opened folder (cwd-jail). Bash is cwd-locked and
 disabled unless an opt-in flag is set. Tool errors (missing file, non-zero exit)
 surface as results rather than exceptions.
 """
@@ -35,10 +35,29 @@ class Tool(Protocol):
         ...
 
 
+DENIED_BINARIES = frozenset({"curl", "wget", "ssh", "scp", "ftp", "telnet", "nc", "ncat"})
+
+BASH_TIMEOUT_S = 30
+
+
 def _resolve(cwd: Path, raw: str) -> Path:
     """Resolve a possibly-relative path against the working directory."""
     p = Path(raw)
     return p if p.is_absolute() else cwd / p
+
+
+def _ensure_within(cwd: Path, path: Path) -> Path | None:
+    """Return resolved ``path`` if it stays inside ``cwd`` (cwd-jail), else None."""
+    try:
+        root = cwd.resolve()
+        resolved = path.resolve() if path.is_absolute() else (cwd / path).resolve()
+    except OSError:
+        return None
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
 
 
 class ReadTool:
@@ -56,7 +75,12 @@ class ReadTool:
         self._cwd = cwd
 
     async def run(self, arguments: dict) -> ToolOutcome:
-        path = _resolve(self._cwd, arguments["path"])
+        raw = arguments["path"]
+        if _ensure_within(self._cwd, _resolve(self._cwd, raw)) is None:
+            return ToolOutcome(
+                content=f"error: path escapes cwd-jail: {raw}", is_error=True
+            )
+        path = _resolve(self._cwd, raw)
         try:
             return ToolOutcome(content=path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -85,7 +109,12 @@ class WriteTool:
         self._cwd = cwd
 
     async def run(self, arguments: dict) -> ToolOutcome:
-        path = _resolve(self._cwd, arguments["path"])
+        raw = arguments["path"]
+        if _ensure_within(self._cwd, _resolve(self._cwd, raw)) is None:
+            return ToolOutcome(
+                content=f"error: path escapes cwd-jail: {raw}", is_error=True
+            )
+        path = _resolve(self._cwd, raw)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(arguments.get("content", ""), encoding="utf-8")
@@ -113,7 +142,12 @@ class EditTool:
         self._cwd = cwd
 
     async def run(self, arguments: dict) -> ToolOutcome:
-        path = _resolve(self._cwd, arguments["path"])
+        raw = arguments["path"]
+        if _ensure_within(self._cwd, _resolve(self._cwd, raw)) is None:
+            return ToolOutcome(
+                content=f"error: path escapes cwd-jail: {raw}", is_error=True
+            )
+        path = _resolve(self._cwd, raw)
         old = arguments["old_text"]
         new = arguments.get("new_text", "")
         try:
@@ -138,7 +172,7 @@ class EditTool:
 
 
 class BashTool:
-    """Run a shell command (unsandboxed, opt-in)."""
+    """Run a shell command (cwd-jailed, opt-in)."""
 
     name = "bash"
     description = "Run a shell command and return its output and exit code."
@@ -159,6 +193,13 @@ class BashTool:
                 is_error=True,
             )
         command = arguments["command"]
+        tokens = {t.strip("\"'").lower() for t in command.replace(";", " ").replace("&", " ").replace("|", " ").split()}
+        denied = sorted(tokens & set(DENIED_BINARIES))
+        if denied:
+            return ToolOutcome(
+                content=f"error: network binary denied in cwd-jail: {denied[0]}",
+                is_error=True,
+            )
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -166,7 +207,19 @@ class BashTool:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=BASH_TIMEOUT_S
+                )
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                return ToolOutcome(
+                    content=f"error: bash timed out after {BASH_TIMEOUT_S}s",
+                    is_error=True,
+                )
             output = stdout.decode(errors="replace") + stderr.decode(errors="replace")
             content = output.rstrip() + f"\n[exit code: {proc.returncode}]"
             return ToolOutcome(content=content, is_error=proc.returncode != 0)

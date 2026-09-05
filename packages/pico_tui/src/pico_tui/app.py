@@ -20,6 +20,7 @@ from rich.table import Table
 from rich.text import Text
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.widgets import Footer, Header, Input, RichLog
 
 from pico_sdk import (
@@ -54,8 +55,7 @@ HELP_TEXT = """\
                           (/model alone opens an interactive model picker)
   [cyan]/provider ...[/]  show or switch backends: local | openrouter
                            (e.g. /provider local, /provider openrouter)
-  [cyan]/theme [name][/]  pick the code-highlight theme (picker if no name)
-                           (the choice is saved for next launch)
+  [cyan]Ctrl+P[/] open the command palette (change theme, quit, ...)
   [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
   [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
   [cyan]/quit, Ctrl+Q[/]    save and exit
@@ -346,11 +346,13 @@ class PicoApp(App[None]):
         ("ctrl+z", "undo", "Undo"),
         ("ctrl+k", "compact", "Compact"),
         ("f1", "show_help", "Help"),
+        Binding("ctrl+p", "command_palette", "Commands", priority=True),
     ]
 
     def __init__(self, mgr: _SessionManager) -> None:
         super().__init__()
         self._mgr = mgr
+        self._apply_saved_theme()
         self._streaming = False
         # Everything written to the chat log, in order. Thinking blocks are
         # stored as ThinkingSegment and failed bash results as
@@ -361,6 +363,24 @@ class PicoApp(App[None]):
         self._thinking_rerender_pending = False
         self._bash_seq = 0
         self._bash_expanded: set[int] = set()
+
+    def _apply_saved_theme(self) -> None:
+        """Restore the last-used app theme; fall back silently if unknown."""
+        session = getattr(self._mgr, "session", None)
+        settings = getattr(session, "settings", None)
+        saved = getattr(settings, "app_theme", "") or "textual-dark"
+        if saved in self.available_themes:
+            self.theme = saved
+
+    def watch_theme(self, old: str, new: str) -> None:
+        """Persist the app theme whenever it changes (e.g. via Ctrl+P)."""
+        try:
+            settings = self._mgr.session.settings
+            if settings.app_theme != new:
+                settings.app_theme = new
+                save_settings(settings)
+        except Exception:
+            pass  # theme persistence is a convenience, never fatal
 
     def _placeholder(self) -> str:
         return "pico>  (type a prompt, or /help for commands)"
@@ -459,14 +479,6 @@ class PicoApp(App[None]):
             if changed:
                 self._persist_model(self._mgr.session.model)
             self._update_status_bar()
-        elif cmd.kind == "theme":
-            if not cmd.arg:
-                await self._show_theme_picker()
-            else:
-                msg = self._mgr.theme(cmd.arg)
-                self._write_chat(Text(msg, style="dim"))
-                if msg.startswith("switched to theme:"):
-                    self._persist_theme()
         elif cmd.kind == "fork":
             msg = self._mgr.fork(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
@@ -526,23 +538,24 @@ class PicoApp(App[None]):
             callback=_on_selected,
         )
 
-    async def _show_theme_picker(self) -> None:
+    def _show_theme_picker(self) -> None:
         """Show the theme picker; the choice applies and persists at once."""
         from .theme_picker import ThemePickerScreen, theme_options
 
         current = self._mgr.session.settings.code_theme
-
-        def _on_selected(name: str | None) -> None:
-            if name:
-                msg = self._mgr.theme(name)
-                self._write_chat(Text(msg, style="dim"))
-                if msg.startswith("switched to theme:"):
-                    self._persist_theme()
-
         self.push_screen(
             ThemePickerScreen(theme_options(current), current=current),
-            callback=_on_selected,
+            callback=self._apply_theme_choice,
         )
+
+    def _apply_theme_choice(self, name: str | None) -> None:
+        """Apply a picked theme: announce + persist (no-op on cancel)."""
+        if not name:
+            return
+        msg = self._mgr.theme(name)
+        self._write_chat(Text(msg, style="dim"))
+        if msg.startswith("switched to theme:"):
+            self._persist_theme()
 
     # -- prompt to agent streaming --
 
@@ -751,12 +764,12 @@ class PicoApp(App[None]):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="pico-chat", description="Interactive pico session (Textual TUI)."
+        prog="pico-chat", description="Interactive workbench session (Textual TUI)."
     )
     parser.add_argument(
         "--no-bash",
         action="store_true",
-        help="Disable unsandboxed bash (on by default).",
+        help="Disable bash (cwd-jailed, on by default).",
     )
     parser.add_argument(
         "--model", default=None, help="Override the configured model."

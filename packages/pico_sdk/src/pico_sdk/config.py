@@ -21,6 +21,7 @@ class Settings(BaseModel):
     # local server (single served model is used directly; with several,
     # the first is used and /model offers the rest as a selector).
     model: str = ""
+    models_file: str = "~/.pico/models.yaml"
     context_window: int = 128_000
     reserve_tokens: int = 16_384
     session_dir: str = "~/.pico/sessions"
@@ -32,6 +33,9 @@ class Settings(BaseModel):
     # Pygments theme for code blocks in the TUI (e.g. monokai, dracula,
     # github-dark). Any style pygments ships is accepted.
     code_theme: str = "monokai"
+    # Textual app theme for the TUI (e.g. textual-dark, dracula, nord).
+    # Set from the Ctrl+P command palette; restored on launch.
+    app_theme: str = "textual-dark"
 
 
 def default_settings_path() -> Path:

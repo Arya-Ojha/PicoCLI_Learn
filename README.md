@@ -1,8 +1,8 @@
 # pico
 
-A Python CLI coding agent — autonomous, tool-using, and session-persistent. Inspired by Pi's modular, plugin-driven architecture.
+A self-hosted, air-gapped AI workbench for sensitive knowledge work. Nothing leaves the premises.
 
-`pico` operates on a repository on your behalf: reading, writing, and editing files, and running bash commands to build, test, and inspect the code. It runs in **yolo mode** (acts on its own without per-step approval), keeps an append-only, branchable session history, and automatically compacts context to stay within the model's token budget.
+`pico` works inside the folder you open it in (cwd-jail): reading, writing, and editing files, searching the local corpus, reading scanned documents, and emitting real deliverables (Word, Excel, PowerPoint, code, calculations with steps). It plans multi-step work, keeps an append-only, branchable session history with a live trace, and automatically compacts context to stay within the model's token budget.
 
 ```text
 pico_ai ─► pico_core ─► pico_sdk ─► pico_tui
@@ -12,16 +12,16 @@ pico_ai ─► pico_core ─► pico_sdk ─► pico_tui
 
 ## Features
 
-- **Headless CLI** — `pico run "do a task"` completes a coding task end-to-end with a single prompt.
-- **Interactive TUI** — `pico-chat` is a full terminal UI (Textual + Rich) for back-and-forth sessions.
-- **Five core tools** — `read`, `write`, `edit` (search/replace patches), `bash`, and `todo_write` (session-scoped work tracking for multi-step tasks).
-- **Fully local by default** — models are served by a loopback vLLM server (`http://localhost:8000/v1`): no cloud, no API key, nothing leaves the machine. The OpenRouter cloud backend is kept for testing only.
-- **One-way LLM gateway** — all backends behind one unified "AI call" shape. Responses stream token-by-token.
+- **Workbench runner** — `pico run "do a task"` completes a task end-to-end with a single prompt.
+- **Interactive TUI** — `pico-chat` is a full terminal UI (Textual + Rich) for back-and-forth sessions, including a realtime Tracing tab.
+- **Local tools** — `read`, `write`, `edit` (search/replace patches), `bash` (cwd-jailed), and `todo_write` (session-scoped work tracking for multi-step tasks).
+- **Fully local by default** — models are served by a loopback vLLM server (`http://localhost:8000/v1`): no cloud, no API key, nothing leaves the machine. The OpenRouter cloud backend is kept for testing only and slated for removal.
+- **Capability router** — `models.yaml` maps task capabilities (`code`, `summary`, `vision`, `ocr`) to models; adding a model is one registry entry.
 - **Reasoning & usage** — thinking blocks are preserved in the transcript; token counts are tracked.
-- **Session tree** — sessions are persisted as append-only trees of nodes; you can resume, rewind, and fork branches.
+- **Session tree + trace** — sessions are persisted as append-only trees of nodes; you can resume, rewind, and fork branches. The trace is a live projection of tool subtypes.
 - **Auto-compaction** — context is summarised automatically at a token threshold, plus a manual override.
-- **Extension hooks** — register providers, tools, and lifecycle hooks; load plugins from a directory.
-- **Yolo mode** — no approval prompts: it self-corrects by looping between streaming and tool execution.
+- **Tool registration** — register providers, tools, and lifecycle hooks; load tool modules from a directory.
+- **Autonomous loop** — no approval prompts: it self-corrects by looping between streaming and tool execution.
 
 ## Packages
 
@@ -29,7 +29,7 @@ pico_ai ─► pico_core ─► pico_sdk ─► pico_tui
 |---|---|---|
 | `pico_ai` | LLM abstraction; unified "AI call" + OpenRouter client | ADR-0001 |
 | `pico_core` | The finite-state-machine agent loop + append-only session tree | ADR-0001, ADR-0002 |
-| `pico_sdk` | The headless `AgentSession` API + extension/plugin binding | ADR-0001 |
+| `pico_sdk` | The `AgentSession` API + tool/provider registration | ADR-0001 |
 | `pico_tui` | The interactive terminal UI (Textual + Rich) | ADR-0001 |
 
 Dependencies flow one way — `pico_ai` ← `pico_core` ← `pico_sdk` ← `pico_tui` (see [ADR-0001](docs/adr/0001-monorepo-package-split.md)). Sessions are a tree of immutable, append-only nodes (see [ADR-0002](docs/adr/0002-tree-based-session.md)).
@@ -88,7 +88,7 @@ Create `~/.pico/settings.json` to override defaults:
 
 ## Usage
 
-### Headless runs
+### Workbench runs
 
 ```bash
 # complete a task in one shot
@@ -108,7 +108,7 @@ Flags for `pico run`:
 
 | Flag | Purpose |
 |---|---|
-| `--no-bash` | Disable unsandboxed bash execution (on by default) |
+| `--no-bash` | Disable bash execution, cwd-jailed (on by default) |
 | `--model <name>` | Override the configured model |
 | `--cwd <path>` | Set the working directory |
 | `--session <id>` | Resume an existing session |
@@ -151,7 +151,7 @@ The test suite is network-free: it drives the whole agent loop through a scripte
 
 ## Domain vocabulary
 
-See [CONTEXT.md](CONTEXT.md) for the full glossary. Key terms: **session**, **node**, **payload**, **branch**, **fork**, **turn**, **tool** / **tool request** / **tool result**, **compaction**, **context window**, **provider**, **AI call**, **extension** (plugin).
+See [CONTEXT.md](CONTEXT.md) for the full glossary. Key terms: **agent**, **cwd-jail**, **router** / **registry** / **capability**, **corpus**, **trace**, **approval note**, **deliverable**, **session**, **node**, **branch**, **fork**, **offline run**.
 
 ## Documentation
 
