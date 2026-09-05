@@ -14,8 +14,27 @@ class Chunk:
     text: str
 
 
+DEFAULT_CORPUS_DIR_NAME = "pico-kb"
+
+NOT_IN_CORPUS = "not in corpus"
+
+
+def default_corpus_dir() -> Path:
+    """Return the default folder-mounted corpus (``~/pico-kb/``)."""
+    return Path.home() / DEFAULT_CORPUS_DIR_NAME
+
+
+def is_allowed(root: Path, path: Path) -> bool:
+    """File ACL: ``path`` must stay inside ``root`` with no hidden parts."""
+    try:
+        rel = path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return not any(part.startswith(".") for part in rel.parts)
+
+
 def chunk_text(text: str, size: int = 2000, overlap: int = 400) -> list[str]:
-    """Split ``text`` into overlapping chunks (approx 512/100 tokens)."""
+    """Split ``text`` into overlapping chunks (~2000/400 chars ≈ 512/100 tokens)."""
     text = text.strip()
     if not text:
         return []
@@ -38,7 +57,7 @@ def index_corpus(root: Path) -> list[Chunk]:
     for file in sorted(root.rglob("*")):
         if not file.is_file() or file.suffix.lower() not in (".md", ".txt"):
             continue
-        if any(part.startswith(".") for part in file.relative_to(root).parts):
+        if not is_allowed(root, file):
             continue
         try:
             text = file.read_text(encoding="utf-8")
@@ -62,3 +81,11 @@ def search(query: str, chunks: list[Chunk], top_k: int = 5) -> list[Chunk]:
             scored.append((score, ch))
     scored.sort(key=lambda s: s[0], reverse=True)
     return [c for _, c in scored[:top_k]]
+
+
+def answer_with_citations(query: str, chunks: list[Chunk], top_k: int = 5) -> str:
+    """Format top hits as ``[doc chunk page]`` lines, or ``NOT_IN_CORPUS``."""
+    hits = search(query, chunks, top_k=top_k)
+    if not hits:
+        return NOT_IN_CORPUS
+    return "\n".join(f"[{h.doc} {h.chunk_id} {h.page}] {h.text[:200]}" for h in hits)

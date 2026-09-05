@@ -45,6 +45,7 @@ from .commands import Command, Prompt, parse_line
 from .model_picker import ModelPickerScreen
 from .render import _truncate, bash_status, render_event
 from .status_bar import ContextStatusBar
+from .trace_panel import format_trace
 
 HELP_TEXT = """\
 [bold]Commands (slash or key binding):[/]
@@ -388,6 +389,7 @@ class PicoApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield RichLog(id="chat-log", highlight=True, markup=True, wrap=True)
+        yield RichLog(id="trace-log", highlight=False, markup=False, wrap=True)
         yield Input(
             id="input-bar",
             placeholder=self._placeholder(),
@@ -403,6 +405,17 @@ class PicoApp(App[None]):
         self.query_one("#chat-log", RichLog).auto_links = False
         self.query_one("#input-bar", Input).focus()
         self._update_status_bar()
+        self._update_trace()
+
+    def _update_trace(self) -> None:
+        """Refresh the live Tracing tab from the session (resume-safe)."""
+        try:
+            trace_log = self.query_one("#trace-log", RichLog)
+            trace_log.clear()
+            text = format_trace(self._mgr.session.session)
+            trace_log.write(Text(text or "(empty trace)", style="dim"))
+        except Exception:
+            pass
 
     def _update_status_bar(self) -> None:
         """Update the status bar with current session info."""
@@ -586,6 +599,7 @@ class PicoApp(App[None]):
             self._finalize_thinking()
             self._streaming = False
             self._update_status_bar()
+            self._update_trace()
 
     # -- helpers --
 
