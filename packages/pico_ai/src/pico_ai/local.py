@@ -19,6 +19,35 @@ from .types import AICallRequest, StreamEvent, ToolCall, Usage
 DEFAULT_LOCAL_BASE_URL = "http://localhost:8000/v1"
 
 
+def normalize_base_url(raw: str) -> str:
+    """Normalize a user-typed local endpoint to a ``.../v1`` base URL.
+
+    Accepts a bare host:port (``127.0.0.1:11434``), a full URL with or
+    without scheme, and with or without the ``/v1`` suffix. Returns the
+    canonical ``http(s)://host:port/v1`` form. Raises ``ValueError`` on
+    empty input or an unparseable host.
+    """
+    from urllib.parse import urlparse
+
+    text = (raw or "").strip().strip("\"'")
+    if not text:
+        raise ValueError("empty endpoint — enter e.g. http://127.0.0.1:11434")
+    if "://" not in text:
+        text = f"http://{text}"
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError(f"invalid endpoint: {raw.strip()!r}")
+    host = parsed.hostname
+    port = f":{parsed.port}" if parsed.port else ""
+    path = (parsed.path or "").rstrip("/")
+    if path in ("", "/", "/v1"):
+        suffix = "/v1"
+    else:
+        # Keep any custom prefix (e.g. /openai/v1) but ensure /v1 tail.
+        suffix = path if path.endswith("/v1") else f"{path}/v1"
+    return f"{parsed.scheme}://{host}{port}{suffix}"
+
+
 class LocalProvider:
     """Streams chat completions from a local OpenAI-compatible server."""
 

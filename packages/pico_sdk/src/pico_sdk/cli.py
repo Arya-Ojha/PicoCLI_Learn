@@ -82,6 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["local", "openrouter"],
         help="Override the configured backend (default: from settings).",
     )
+    run.add_argument(
+        "--base-url",
+        default=None,
+        help="Override the local server endpoint (e.g. http://127.0.0.1:11434).",
+    )
     run.add_argument("--cwd", default=None, help="Working directory (default: current).")
     run.add_argument("--session", default=None, help="Resume an existing session by id.")
     return parser
@@ -91,6 +96,15 @@ async def run_command(args: argparse.Namespace) -> int:
     settings = load_settings()
     if getattr(args, "provider", None):
         settings.provider = args.provider
+    if getattr(args, "base_url", None):
+        from pico_ai.local import normalize_base_url
+
+        try:
+            settings.base_url = normalize_base_url(args.base_url)
+        except ValueError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 1
+        settings.provider = "local"
     provider = create_provider(settings)
 
     if (settings.provider or "local").lower() == "openrouter":

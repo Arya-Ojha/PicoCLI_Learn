@@ -56,6 +56,9 @@ HELP_TEXT = """\
                           (/model alone opens an interactive model picker)
   [cyan]/provider ...[/]  show or switch backends: local | openrouter
                            (e.g. /provider local, /provider openrouter)
+  [cyan]/local [url][/]    show or set the local server endpoint
+                           (/local alone opens an endpoint popup; the
+                           choice is saved to settings.json)
   [cyan]Ctrl+P[/] open the command palette (change theme, quit, ...)
   [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
   [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
@@ -302,6 +305,46 @@ class _SessionManager:
         settings.model = model
         return f"{note}switched to provider: {which} (model: {model})", True
 
+    async def local(self, arg: str) -> tuple[str, bool]:
+        """Show or switch the local server endpoint; returns (message, changed).
+
+        Usage: ``/local`` (show current; the app opens an endpoint popup),
+        ``/local <url>`` (set directly, e.g. ``/local http://127.0.0.1:11434``).
+        The URL is normalized to a ``.../v1`` base URL, the local provider is
+        rebuilt, served models are auto-detected, and the choice is kept in
+        memory (the caller persists settings).
+        """
+        from .local_screen import normalize_base_url
+
+        settings = self.session.settings
+        current = settings.base_url or ""
+        raw = (arg or "").strip()
+        if not raw:
+            return (
+                f"current local endpoint: {current or '(unset)'} — "
+                "use /local <url> (e.g. /local http://127.0.0.1:11434)",
+                False,
+            )
+        try:
+            base_url = normalize_base_url(raw)
+        except ValueError as exc:
+            return f"error: {exc}", False
+        settings.base_url = base_url
+        settings.provider = "local"
+        self.session.loop.provider = create_provider(settings)
+        model, served = await resolve_model(self.session.loop.provider, settings)
+        ids = [m.get("id", "") for m in served if m.get("id")]
+        if not served:
+            note = f"warning: no local models detected at {base_url}; using '{model}'.\n"
+        elif len(ids) > 1:
+            note = "served models: " + ", ".join(ids) + "\n"
+        else:
+            note = ""
+        self.session.model = model
+        self.session.loop.model = model
+        settings.model = model
+        return f"{note}local endpoint set to: {base_url} (model: {model})", True
+
     def fork(self, arg: str) -> str:
         branch = self.session.session.active_branch()
         node_id = arg
@@ -492,6 +535,15 @@ class PicoApp(App[None]):
             if changed:
                 self._persist_model(self._mgr.session.model)
             self._update_status_bar()
+        elif cmd.kind == "local":
+            if not cmd.arg:
+                await self._show_local_screen()
+            else:
+                msg, changed = await self._mgr.local(cmd.arg)
+                self._write_chat(Text(msg, style="dim"))
+                if changed:
+                    self._persist_endpoint()
+                self._update_status_bar()
         elif cmd.kind == "fork":
             msg = self._mgr.fork(cmd.arg)
             self._write_chat(Text(msg, style="dim"))
@@ -511,6 +563,39 @@ class PicoApp(App[None]):
             self._write_chat(
                 Text(f"(could not save model preference: {exc})", style="dim")
             )
+
+    def _persist_endpoint(self) -> None:
+        """Remember the local endpoint + model choice for the next launch.
+
+        Failures are non-fatal — persistence is a convenience.
+        """
+        try:
+            save_settings(self._mgr.session.settings)
+        except Exception as exc:
+            self._write_chat(
+                Text(f"(could not save local endpoint: {exc})", style="dim")
+            )
+
+    async def _show_local_screen(self) -> None:
+        """Open the endpoint popup; applying the choice re-detects models."""
+        from .local_screen import LocalEndpointScreen
+
+        current = self._mgr.session.settings.base_url or ""
+
+        def _on_endpoint(value: str | None) -> None:
+            if value is None or not value.strip():
+                return  # cancelled
+            asyncio.create_task(self._apply_local_choice(value))
+
+        self.push_screen(LocalEndpointScreen(current=current), callback=_on_endpoint)
+
+    async def _apply_local_choice(self, raw: str) -> None:
+        """Apply a popup endpoint choice: switch, announce, persist."""
+        msg, changed = await self._mgr.local(raw)
+        self._write_chat(Text(msg, style="dim"))
+        if changed:
+            self._persist_endpoint()
+        self._update_status_bar()
 
     def _persist_theme(self) -> None:
         """Remember the user's code-theme choice for the next launch.
@@ -795,6 +880,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Override the configured backend (default: from settings).",
     )
     parser.add_argument(
+        "--base-url",
+        default=None,
+        help="Override the local server endpoint (e.g. http://127.0.0.1:11434).",
+    )
+    parser.add_argument(
         "--cwd", default=None, help="Working directory (default: current)."
     )
     parser.add_argument(
@@ -805,6 +895,14 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings()
     if args.provider:
         settings.provider = args.provider
+    if args.base_url:
+        from .local_screen import normalize_base_url
+
+        try:
+            settings.base_url = normalize_base_url(args.base_url)
+        except ValueError as exc:
+            print(f"error: {exc}")
+            return 1
     from .render import set_code_theme
 
     if not set_code_theme(settings.code_theme or "monokai"):
