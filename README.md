@@ -14,7 +14,7 @@ pico_ai ─► pico_core ─► pico_sdk ─► pico_tui
 
 - **Workbench runner** — `pico run "do a task"` completes a task end-to-end with a single prompt.
 - **Interactive TUI** — `pico-chat` is a full terminal UI (Textual + Rich) for back-and-forth sessions, including a realtime Tracing tab.
-- **Local tools** — `read`, `write`, `edit` (search/replace patches), `bash` (cwd-jailed), and `todo_write` (session-scoped work tracking for multi-step tasks).
+- **Local tools** — `read`, `write`, `edit` (search/replace patches), `bash` (cwd-jailed), `ocr_read` (vision-slot extraction subagent for PDFs/images), `summarize` (summary-slot fast model for summary-grade tasks), and `todo_write` (session-scoped work tracking for multi-step tasks).
 - **Fully local by default** — models are served by a loopback vLLM server (`http://localhost:8000/v1`): no cloud, no API key, nothing leaves the machine. The OpenRouter cloud backend is kept for testing only and slated for removal.
 - **Capability router** — `models.yaml` maps task capabilities (`code`, `summary`, `vision`, `ocr`) to models; adding a model is one registry entry.
 - **Reasoning & usage** — thinking blocks are preserved in the transcript; token counts are tracked.
@@ -127,6 +127,7 @@ uv run pico-chat
 | `/history` | `Ctrl+H` | List session nodes (with indices for `/fork`) |
 | `/compact [text]` | `Ctrl+K` | Compact context (optionally with steering text) |
 | `/provider ...` | — | Show or switch backends: `local` \| `openrouter` (optional model) |
+| `/local ...` | — | Show or set model endpoints: bare `/local` opens the 3-slot popup (coding/reasoning, vision, summary — each with its own URL); `/local <url>` and `/local vision\|summary <url>` set one slot |
 | `/fork <n or id>` | — | Rewind to a node and start a new branch |
 | `/undo` | `Ctrl+Z` | Rewind to the previous user turn |
 | `/quit` | `Ctrl+Q` | Save the session and exit |

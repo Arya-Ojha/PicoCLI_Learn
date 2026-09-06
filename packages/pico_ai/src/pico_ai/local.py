@@ -83,42 +83,58 @@ class LocalProvider:
             headers["Authorization"] = f"Bearer {self._api_key}"
         client = self._client or httpx.AsyncClient(timeout=self._timeout)
         pending: dict[int, dict] = {}
-        response_cm = client.stream(
-            "POST",
-            f"{self._base_url}/chat/completions",
-            json=payload,
-            headers=headers,
-        )
-        response: httpx.Response | None = None
         try:
-            # Bound the wait for the response headers plus the first SSE line.
-            try:
-                async with asyncio.timeout(self._first_token_timeout):
-                    response = await response_cm.__aenter__()
-                    if response.status_code >= 400:
-                        body = (await response.aread()).decode(errors="replace")
+            # Some local servers (e.g. Ollama with extraction-only models
+            # like NuExtract) reject tool payloads with a 400 instead of
+            # ignoring them. Retry once without tools so a no-tools model
+            # degrades to plain chat instead of killing the loop.
+            for attempt in range(2):
+                response_cm = client.stream(
+                    "POST",
+                    f"{self._base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
+                response: httpx.Response | None = None
+                try:
+                    # Bound the wait for the response headers + first SSE line.
+                    try:
+                        async with asyncio.timeout(self._first_token_timeout):
+                            response = await response_cm.__aenter__()
+                            if response.status_code >= 400:
+                                body = (await response.aread()).decode(errors="replace")
+                                if (
+                                    attempt == 0
+                                    and request.tools
+                                    and "does not support tools" in body
+                                ):
+                                    self._tool_support[request.model] = False
+                                    payload = self._build_payload(request)
+                                    continue
+                                raise RuntimeError(
+                                    f"local model error {response.status_code} "
+                                    f"for model '{request.model}': "
+                                    f"{body[:500]}"
+                                )
+                            lines = response.aiter_lines()
+                            first_line = await anext(lines, None)
+                    except TimeoutError as exc:
                         raise RuntimeError(
-                            f"local model error {response.status_code} "
-                            f"for model '{request.model}': "
-                            f"{body[:500]}"
-                        )
-                    lines = response.aiter_lines()
-                    first_line = await anext(lines, None)
-            except TimeoutError as exc:
-                raise RuntimeError(
-                    f"no response from local model within "
-                    f"{self._first_token_timeout:g}s "
-                    f"(first-token timeout); is the server running at "
-                    f"{self._base_url}?"
-                ) from exc
-            if first_line is not None:
-                async for event in self._emit_lines(
-                    self._prepend(first_line, lines), pending
-                ):
-                    yield event
+                            f"no response from local model within "
+                            f"{self._first_token_timeout:g}s "
+                            f"(first-token timeout); is the server running at "
+                            f"{self._base_url}?"
+                        ) from exc
+                    if first_line is not None:
+                        async for event in self._emit_lines(
+                            self._prepend(first_line, lines), pending
+                        ):
+                            yield event
+                    return
+                finally:
+                    if response is not None:
+                        await response_cm.__aexit__(None, None, None)
         finally:
-            if response is not None:
-                await response_cm.__aexit__(None, None, None)
             if self._client is None:
                 await client.aclose()
 

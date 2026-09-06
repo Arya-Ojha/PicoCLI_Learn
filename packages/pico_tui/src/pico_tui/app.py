@@ -56,9 +56,10 @@ HELP_TEXT = """\
                           (/model alone opens an interactive model picker)
   [cyan]/provider ...[/]  show or switch backends: local | openrouter
                            (e.g. /provider local, /provider openrouter)
-  [cyan]/local [url][/]    show or set the local server endpoint
-                           (/local alone opens an endpoint popup; the
-                           choice is saved to settings.json)
+  [cyan]/local ...[/]      show or set model endpoints: bare /local opens
+                           the 3-slot popup (coding/reasoning, vision,
+                           summary — each with its own URL); /local <url>
+                           and /local vision|summary <url> set one slot
   [cyan]Ctrl+P[/] open the command palette (change theme, quit, ...)
   [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
   [cyan]/undo, Ctrl+Z[/]    rewind to the previous user turn
@@ -306,44 +307,140 @@ class _SessionManager:
         return f"{note}switched to provider: {which} (model: {model})", True
 
     async def local(self, arg: str) -> tuple[str, bool]:
-        """Show or switch the local server endpoint; returns (message, changed).
+        """Show or switch local endpoints; returns (message, changed).
 
-        Usage: ``/local`` (show current; the app opens an endpoint popup),
-        ``/local <url>`` (set directly, e.g. ``/local http://127.0.0.1:11434``).
-        The URL is normalized to a ``.../v1`` base URL, the local provider is
-        rebuilt, served models are auto-detected, and the choice is kept in
-        memory (the caller persists settings).
+        Usage: ``/local`` (the app opens the 3-slot endpoint popup),
+        ``/local <url>`` (set the orchestrator endpoint directly),
+        ``/local vision|summary <url>`` (set one subagent slot directly;
+        an empty url clears the slot back to the orchestrator endpoint).
+        The choice is kept in memory (the caller persists settings).
         """
+        from pico_sdk.providers import resolve_slot
+
         from .local_screen import normalize_base_url
 
         settings = self.session.settings
-        current = settings.base_url or ""
         raw = (arg or "").strip()
         if not raw:
+            orch = settings.base_url or "(unset)"
+            vis = settings.vision_base_url or "(shares orchestrator)"
+            summ = settings.summary_base_url or "(shares orchestrator)"
             return (
-                f"current local endpoint: {current or '(unset)'} — "
-                "use /local <url> (e.g. /local http://127.0.0.1:11434)",
+                f"orchestrator: {orch} [{self.session.model}]\n"
+                f"vision: {vis} [{settings.vision_model or self.session.model}]\n"
+                f"summary: {summ} [{settings.summary_model or self.session.model}]\n"
+                "use /local <url>, /local vision|summary <url>, or bare /local for the popup",
                 False,
             )
+        parts = raw.split(None, 1)
+        slot = "orchestrator"
+        url_raw = raw
+        if parts and parts[0].lower() in ("vision", "summary"):
+            slot = parts[0].lower()
+            url_raw = parts[1] if len(parts) > 1 else ""
+        if not url_raw.strip():
+            # Clear the slot back to sharing the orchestrator endpoint.
+            if slot == "orchestrator":
+                return "error: orchestrator endpoint cannot be cleared", False
+            if slot == "vision":
+                settings.vision_base_url = ""
+                settings.vision_model = ""
+            else:
+                settings.summary_base_url = ""
+                settings.summary_model = ""
+            return f"{slot} slot cleared (now shares the orchestrator endpoint)", True
         try:
-            base_url = normalize_base_url(raw)
+            base_url = normalize_base_url(url_raw)
         except ValueError as exc:
             return f"error: {exc}", False
-        settings.base_url = base_url
+        if slot == "orchestrator":
+            settings.base_url = base_url
+            settings.provider = "local"
+            self.session.loop.provider = create_provider(settings)
+            model, served = await resolve_model(self.session.loop.provider, settings)
+            ids = [m.get("id", "") for m in served if m.get("id")]
+            if not served:
+                note = f"warning: no local models detected at {base_url}; using '{model}'.\n"
+            elif len(ids) > 1:
+                note = "served models: " + ", ".join(ids) + "\n"
+            else:
+                note = ""
+            self.session.model = model
+            self.session.loop.model = model
+            settings.model = model
+            if model and "nuextract" in model.lower():
+                note += (
+                    "warning: this looks like an extraction-only model (no tool "
+                    "support) — it cannot drive the agent loop. Point the "
+                    "orchestrator at a tool-capable model and use NuExtract "
+                    "in the vision slot.\n"
+                )
+            return f"{note}orchestrator endpoint set to: {base_url} (model: {model})", True
+        model, _served, note = await resolve_slot(
+            base_url, getattr(settings, f"{slot}_model") or ""
+        )
+        setattr(settings, f"{slot}_base_url", base_url)
+        setattr(settings, f"{slot}_model", model)
+        return f"{slot} slot set to: {base_url} (model: {model})\n{note}", True
+
+    async def apply_local_slots(self, values: dict) -> tuple[str, bool]:
+        """Apply the 3-slot popup form; returns (message, changed).
+
+        Validates every URL before mutating anything. Blank slot URLs mean
+        "share the orchestrator endpoint"; a blank orchestrator URL keeps
+        the current value.
+        """
+        from pico_ai.local import DEFAULT_LOCAL_BASE_URL
+
+        from pico_sdk.providers import resolve_slot
+
+        from .local_screen import normalize_base_url
+
+        settings = self.session.settings
+        normalized: dict[str, str] = {}
+        for slot in ("orchestrator", "vision", "summary"):
+            raw = str(values.get(f"{slot}_url", "") or "").strip()
+            if not raw:
+                normalized[slot] = ""
+                continue
+            try:
+                normalized[slot] = normalize_base_url(raw)
+            except ValueError as exc:
+                return f"error in {slot} slot: {exc}", False
+        models = {
+            slot: str(values.get(f"{slot}_model", "") or "").strip()
+            for slot in ("orchestrator", "vision", "summary")
+        }
+        # Orchestrator: apply + rebuild loop provider + autodetect.
+        settings.base_url = normalized["orchestrator"] or settings.base_url or DEFAULT_LOCAL_BASE_URL
+        if models["orchestrator"]:
+            settings.model = models["orchestrator"]
         settings.provider = "local"
         self.session.loop.provider = create_provider(settings)
         model, served = await resolve_model(self.session.loop.provider, settings)
-        ids = [m.get("id", "") for m in served if m.get("id")]
-        if not served:
-            note = f"warning: no local models detected at {base_url}; using '{model}'.\n"
-        elif len(ids) > 1:
-            note = "served models: " + ", ".join(ids) + "\n"
-        else:
-            note = ""
         self.session.model = model
         self.session.loop.model = model
         settings.model = model
-        return f"{note}local endpoint set to: {base_url} (model: {model})", True
+        lines = [f"orchestrator: {settings.base_url} [{model}]"]
+        if model and "nuextract" in model.lower():
+            lines.append(
+                "warning: orchestrator looks like an extraction-only model — "
+                "point it at a tool-capable model and put NuExtract in vision"
+            )
+        # Subagent slots: store + best-effort probe (never fatal).
+        for slot in ("vision", "summary"):
+            setattr(settings, f"{slot}_base_url", normalized[slot])
+            slot_model = models[slot]
+            if normalized[slot]:
+                probed, _served, note = await resolve_slot(normalized[slot], slot_model)
+                if probed:
+                    slot_model = probed
+                lines.append(f"{slot}: {normalized[slot]} [{slot_model or model}] ({note})")
+            else:
+                lines.append(f"{slot}: shares orchestrator [{slot_model or model}]")
+            setattr(settings, f"{slot}_model", slot_model)
+        _ = served
+        return "\n".join(lines), True
 
     def fork(self, arg: str) -> str:
         branch = self.session.session.active_branch()
@@ -577,21 +674,31 @@ class PicoApp(App[None]):
             )
 
     async def _show_local_screen(self) -> None:
-        """Open the endpoint popup; applying the choice re-detects models."""
+        """Open the 3-slot endpoint popup; applying it re-detects models."""
         from .local_screen import LocalEndpointScreen
 
-        current = self._mgr.session.settings.base_url or ""
+        settings = self._mgr.session.settings
 
-        def _on_endpoint(value: str | None) -> None:
-            if value is None or not value.strip():
+        def _on_slots(value: dict | None) -> None:
+            if value is None:
                 return  # cancelled
             asyncio.create_task(self._apply_local_choice(value))
 
-        self.push_screen(LocalEndpointScreen(current=current), callback=_on_endpoint)
+        self.push_screen(
+            LocalEndpointScreen(
+                orchestrator_model=self._mgr.session.model or settings.model or "",
+                orchestrator_url=settings.base_url or "",
+                vision_model=settings.vision_model or "",
+                vision_url=settings.vision_base_url or "",
+                summary_model=settings.summary_model or "",
+                summary_url=settings.summary_base_url or "",
+            ),
+            callback=_on_slots,
+        )
 
-    async def _apply_local_choice(self, raw: str) -> None:
-        """Apply a popup endpoint choice: switch, announce, persist."""
-        msg, changed = await self._mgr.local(raw)
+    async def _apply_local_choice(self, values: dict) -> None:
+        """Apply popup slot choices: switch, announce, persist."""
+        msg, changed = await self._mgr.apply_local_slots(values)
         self._write_chat(Text(msg, style="dim"))
         if changed:
             self._persist_endpoint()

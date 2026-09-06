@@ -21,6 +21,17 @@ class Settings(BaseModel):
     # local server (single served model is used directly; with several,
     # the first is used and /model offers the rest as a selector).
     model: str = ""
+    # The above pair is the orchestrator slot (coding/reasoning): the sole
+    # driver of the agent loop. The two subagent slots below default to ""
+    # (meaning "same as orchestrator") and are configured per-slot in the
+    # /local popup, each with its own endpoint.
+    # Vision slot: image-to-text extraction behind the ocr_read tool.
+    vision_model: str = ""
+    vision_base_url: str = ""
+    # Summary slot: fast small model behind the summarize tool for
+    # summary-grade tasks. Compaction (/compact) stays on the orchestrator.
+    summary_model: str = ""
+    summary_base_url: str = ""
     models_file: str = "~/.pico/models.yaml"
     context_window: int = 128_000
     reserve_tokens: int = 16_384
@@ -36,6 +47,21 @@ class Settings(BaseModel):
     # Textual app theme for the TUI (e.g. textual-dark, dracula, nord).
     # Set from the Ctrl+P command palette; restored on launch.
     app_theme: str = "textual-dark"
+
+    def slot(self, name: str) -> tuple[str, str]:
+        """Return the ``(model, base_url)`` pair for a subagent slot.
+
+        ``name`` is ``"vision"`` or ``"summary"``. Empty slot fields fall
+        back to the orchestrator pair, so a single shared endpoint/model
+        works with no extra configuration.
+        """
+        if name == "vision":
+            model, base_url = self.vision_model, self.vision_base_url
+        elif name == "summary":
+            model, base_url = self.summary_model, self.summary_base_url
+        else:
+            raise KeyError(f"unknown slot: {name}")
+        return (model.strip() or self.model, base_url.strip() or self.base_url)
 
 
 def default_settings_path() -> Path:

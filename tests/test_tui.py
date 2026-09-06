@@ -28,6 +28,13 @@ def test_parse_line_commands():
     assert parse_line("/provider") == Command("provider", "")
     assert parse_line("/provider local") == Command("provider", "local")
     assert parse_line("/provider openrouter") == Command("provider", "openrouter")
+    assert parse_line("/local") == Command("local", "")
+    assert parse_line("/local http://127.0.0.1:11434") == Command(
+        "local", "http://127.0.0.1:11434"
+    )
+    assert parse_line("/local vision http://127.0.0.1:11434") == Command(
+        "local", "vision http://127.0.0.1:11434"
+    )
     # No /theme command: theme switching lives in the Ctrl+P palette.
     assert parse_line("/theme dracula") == Prompt("/theme dracula")
 
@@ -428,3 +435,194 @@ async def test_write_log_indents_and_separates_segments(tmp_path):
         assert "  bash error..." in body
         assert "[@click" not in body
         assert body.count("\n\n") >= 2  # blank line after each segment
+
+
+async def test_local_shows_all_slots(tmp_path):
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import _SessionManager
+
+    mgr = _SessionManager(make_session(FakeProvider([]), tmp_path))
+    msg, changed = await mgr.local("")
+    assert changed is False
+    assert "orchestrator" in msg and "vision" in msg and "summary" in msg
+
+
+async def test_local_sets_orchestrator_directly(monkeypatch, tmp_path):
+    import pico_tui.app as app_module
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import _SessionManager
+
+    class _LocalStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def list_models(self):
+            return [{"id": "coder", "name": "coder"}]
+
+    monkeypatch.setattr(app_module, "create_provider", lambda settings: _LocalStub())
+
+    async def _resolve(provider, settings):
+        return "coder", [{"id": "coder", "name": "coder"}]
+
+    monkeypatch.setattr(app_module, "resolve_model", _resolve)
+    session = make_session(FakeProvider([]), tmp_path)
+    msg, changed = await _SessionManager(session).local("127.0.0.1:8000")
+    assert changed is True
+    assert session.settings.base_url == "http://127.0.0.1:8000/v1"
+    assert session.model == "coder"
+    assert "orchestrator endpoint set to" in msg
+
+
+async def test_local_warns_on_nuextract_orchestrator(monkeypatch, tmp_path):
+    import pico_tui.app as app_module
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import _SessionManager
+
+    class _LocalStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def list_models(self):
+            return [{"id": "nuextract-3", "name": "nuextract-3"}]
+
+    monkeypatch.setattr(app_module, "create_provider", lambda settings: _LocalStub())
+
+    async def _resolve(provider, settings):
+        return "nuextract-3", [{"id": "nuextract-3", "name": "nuextract-3"}]
+
+    monkeypatch.setattr(app_module, "resolve_model", _resolve)
+    session = make_session(FakeProvider([]), tmp_path)
+    msg, changed = await _SessionManager(session).local("http://127.0.0.1:11434")
+    assert changed is True
+    assert "extraction-only" in msg
+
+
+async def test_local_vision_slot_and_clear(monkeypatch, tmp_path):
+    import pico_sdk.providers as providers_module
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import _SessionManager
+
+    async def _slot(base_url, model):
+        return "vis", [{"id": "vis", "name": "vis"}], "ok"
+
+    monkeypatch.setattr(providers_module, "resolve_slot", _slot)
+    session = make_session(FakeProvider([]), tmp_path)
+    mgr = _SessionManager(session)
+    msg, changed = await mgr.local("vision 127.0.0.1:11434")
+    assert changed is True
+    assert session.settings.vision_base_url == "http://127.0.0.1:11434/v1"
+    assert session.settings.vision_model == "vis"
+    assert msg.startswith("vision slot set to")
+    msg, changed = await mgr.local("vision")
+    assert changed is True
+    assert session.settings.vision_base_url == ""
+    assert "cleared" in msg
+
+
+async def test_local_rejects_bad_url_without_mutating(tmp_path):
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import _SessionManager
+
+    session = make_session(FakeProvider([]), tmp_path)
+    before = session.settings.base_url
+    msg, changed = await _SessionManager(session).local("http://")
+    assert changed is False and msg.startswith("error:")
+    assert session.settings.base_url == before
+
+
+async def test_apply_local_slots_validates_first(monkeypatch, tmp_path):
+    import pico_tui.app as app_module
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import _SessionManager
+
+    session = make_session(FakeProvider([]), tmp_path)
+    mgr = _SessionManager(session)
+    before_url = session.settings.base_url
+    msg, changed = await mgr.apply_local_slots(
+        {"orchestrator_model": "", "orchestrator_url": "http://localhost:8000",
+         "vision_model": "", "vision_url": "http://",
+         "summary_model": "", "summary_url": ""}
+    )
+    assert changed is False and msg.startswith("error in vision slot")
+    assert session.settings.base_url == before_url
+    assert session.settings.vision_base_url == ""
+
+
+async def test_apply_local_slots_popup_values(monkeypatch, tmp_path):
+    import pico_sdk.providers as providers_module
+    import pico_tui.app as app_module
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import _SessionManager
+
+    class _LocalStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def list_models(self):
+            return [{"id": "coder", "name": "coder"}]
+
+    monkeypatch.setattr(app_module, "create_provider", lambda settings: _LocalStub())
+
+    async def _resolve(provider, settings):
+        return "coder", [{"id": "coder", "name": "coder"}]
+
+    monkeypatch.setattr(app_module, "resolve_model", _resolve)
+
+    async def _slot(base_url, model):
+        return "vis", [{"id": "vis", "name": "vis"}], "ok"
+
+    monkeypatch.setattr(providers_module, "resolve_slot", _slot)
+    session = make_session(FakeProvider([]), tmp_path)
+    msg, changed = await _SessionManager(session).apply_local_slots(
+        {"orchestrator_model": "", "orchestrator_url": "localhost:8000",
+         "vision_model": "", "vision_url": "127.0.0.1:11434",
+         "summary_model": "tiny", "summary_url": ""}
+    )
+    assert changed is True
+    assert session.settings.base_url == "http://localhost:8000/v1"
+    assert session.settings.vision_base_url == "http://127.0.0.1:11434/v1"
+    assert session.settings.vision_model == "vis"
+    assert session.settings.summary_base_url == ""
+    assert session.settings.summary_model == "tiny"
+    assert "orchestrator:" in msg and "vision:" in msg and "summary:" in msg
+
+
+async def test_local_popup_saves_and_cancels(tmp_path):
+    from conftest import FakeProvider, make_session
+    from pico_tui.app import PicoApp, _SessionManager
+    from pico_tui.local_screen import LocalEndpointScreen
+
+    app = PicoApp(_SessionManager(make_session(FakeProvider([]), tmp_path)))
+    chosen: list = []
+    async with app.run_test() as pilot:
+        from textual.widgets import Button
+
+        app.push_screen(
+            LocalEndpointScreen(
+                orchestrator_model="",
+                orchestrator_url="http://localhost:8000/v1",
+                vision_model="",
+                vision_url="",
+                summary_model="",
+                summary_url="",
+            ),
+            callback=chosen.append,
+        )
+        await pilot.pause()
+        app.screen.query_one("#local-save", Button).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert len(chosen) == 1
+    assert chosen[0]["orchestrator_url"] == "http://localhost:8000/v1"
+
+    cancelled: list = []
+    app2 = PicoApp(_SessionManager(make_session(FakeProvider([]), tmp_path)))
+    async with app2.run_test() as pilot:
+        from textual.widgets import Button
+
+        app2.push_screen(LocalEndpointScreen(), callback=cancelled.append)
+        await pilot.pause()
+        app2.screen.query_one("#local-cancel", Button).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert cancelled == [None]

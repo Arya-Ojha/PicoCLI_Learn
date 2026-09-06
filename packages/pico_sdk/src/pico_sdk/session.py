@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,7 @@ from pico_core.todos import TodoStore, TodoWriteTool
 from pico_core.tools import BashTool, EditTool, ReadTool, Tool, ToolRegistry, WriteTool
 
 from .config import Settings, load_settings
+from .docread import DocPage
 from .extensions import ExtensionManager
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -114,14 +115,32 @@ class AgentSession:
     # -- core tools ---------------------------------------------------------
 
     def _register_core_tools(self, allow_bash: bool) -> None:
+        from .ocr import OcrTool
+        from .summarize import SummarizeTool
+
+        ocr = OcrTool(self.working_dir, self.settings, on_pages=self._append_ocr_pages)
         for tool in (
             ReadTool(self.working_dir),
             WriteTool(self.working_dir),
             EditTool(self.working_dir),
             BashTool(self.working_dir, enabled=allow_bash),
             TodoWriteTool(self.todos),
+            ocr,
+            SummarizeTool(self.working_dir, self.settings),
         ):
             self.tools.register(tool)
+
+    def _append_ocr_pages(self, pages: Sequence[DocPage]) -> None:
+        """Keep per-page ``ocr_page`` trace nodes for an ocr_read call."""
+        from pico_core.session import ocr_page_payload
+
+        from .ocr import trace_page_text
+
+        for page in pages:
+            self.session.append(
+                self.session.active_leaf_id,
+                ocr_page_payload(page.page, page.png, trace_page_text(page.text)),
+            )
 
     # -- running ------------------------------------------------------------
 

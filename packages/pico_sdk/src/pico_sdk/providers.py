@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from pico_ai.local import DEFAULT_LOCAL_BASE_URL, LocalProvider
+import httpx
+
+from pico_ai.local import DEFAULT_LOCAL_BASE_URL, LocalProvider, normalize_base_url
 from pico_ai.openrouter import OpenRouterProvider
 
 from .config import Settings, load_settings
@@ -70,6 +72,35 @@ async def resolve_model(
 
 
 FREE_MODEL_ALIAS = "openrouter/free"
+
+
+async def resolve_slot(
+    base_url: str, model: str, timeout_s: float = 15.0
+) -> tuple[str, list[dict], str]:
+    """Best-effort served-model lookup for a subagent slot (vision/summary).
+
+    Returns ``(model, served, note)``. ``note`` is human-readable: either a
+    confirmation listing served ids or a warning when the endpoint is
+    unreachable (the typed values are kept as-is). Never raises — a slot
+    the user just typed may point at a server that is briefly down.
+    """
+    try:
+        probe = LocalProvider(
+            base_url=base_url or DEFAULT_LOCAL_BASE_URL,
+            timeout=httpx.Timeout(timeout_s, connect=5.0),
+        )
+        served = await probe.list_models()
+    except Exception as exc:
+        return model, [], f"warning: {base_url} unreachable ({exc}); keeping typed values"
+    ids = [m.get("id", "") for m in served if m.get("id")]
+    if not ids:
+        return model, served, f"warning: no models served at {base_url}; keeping typed values"
+    if model.strip() in ids:
+        return model.strip(), served, f"ok: {model.strip()} confirmed at {base_url}"
+    if len(ids) == 1:
+        return ids[0], served, f"ok: using served model {ids[0]} at {base_url}"
+    picked = ids[0]
+    return picked, served, f"ok: {len(ids)} models at {base_url}; using {picked} (served: {', '.join(ids)})"
 
 
 async def resolve_free_model(provider: Any) -> str | None:
