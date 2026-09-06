@@ -58,7 +58,8 @@ HELP_TEXT = """\
                            (e.g. /provider local, /provider openrouter)
   [cyan]/local ...[/]      show or set model endpoints: bare /local opens
                            the 3-slot popup (coding/reasoning, vision,
-                           summary — each with its own URL); /local <url>
+                           summary — each with its own URL; empty
+                           orchestrator URL = OpenRouter default); /local <url>
                            and /local vision|summary <url> set one slot
   [cyan]Ctrl+P[/] open the command palette (change theme, quit, ...)
   [cyan]/fork <n|id>[/]     rewind to a node and start a new branch
@@ -386,12 +387,10 @@ class _SessionManager:
     async def apply_local_slots(self, values: dict) -> tuple[str, bool]:
         """Apply the 3-slot popup form; returns (message, changed).
 
-        Validates every URL before mutating anything. Blank slot URLs mean
-        "share the orchestrator endpoint"; a blank orchestrator URL keeps
-        the current value.
+        Validates every URL before mutating anything. A blank orchestrator
+        URL means "use OpenRouter" (the default orchestrator); blank
+        vision/summary URLs mean "share the orchestrator endpoint".
         """
-        from pico_ai.local import DEFAULT_LOCAL_BASE_URL
-
         from pico_sdk.providers import resolve_slot
 
         from .local_screen import normalize_base_url
@@ -411,22 +410,49 @@ class _SessionManager:
             slot: str(values.get(f"{slot}_model", "") or "").strip()
             for slot in ("orchestrator", "vision", "summary")
         }
-        # Orchestrator: apply + rebuild loop provider + autodetect.
-        settings.base_url = normalized["orchestrator"] or settings.base_url or DEFAULT_LOCAL_BASE_URL
-        if models["orchestrator"]:
-            settings.model = models["orchestrator"]
-        settings.provider = "local"
-        self.session.loop.provider = create_provider(settings)
-        model, served = await resolve_model(self.session.loop.provider, settings)
-        self.session.model = model
-        self.session.loop.model = model
-        settings.model = model
-        lines = [f"orchestrator: {settings.base_url} [{model}]"]
-        if model and "nuextract" in model.lower():
-            lines.append(
-                "warning: orchestrator looks like an extraction-only model — "
-                "point it at a tool-capable model and put NuExtract in vision"
-            )
+        # Orchestrator: blank URL = OpenRouter default; otherwise local endpoint.
+        if not normalized["orchestrator"]:
+            if not os.environ.get(settings.api_key_env, ""):
+                return (
+                    f"error: {settings.api_key_env} is not set; "
+                    "cannot use OpenRouter as the default orchestrator",
+                    False,
+                )
+            settings.provider = "openrouter"
+            self.session.loop.provider = create_provider(settings)
+            orch_model = models["orchestrator"]
+            if orch_model and orch_model != FREE_MODEL_ALIAS:
+                model = orch_model
+                note = ""
+            else:
+                resolved = await resolve_free_model(self.session.loop.provider)
+                if resolved:
+                    model = resolved
+                    note = f"using free model: {model}\n"
+                else:
+                    model = FALLBACK_MODEL
+                    note = ""
+            self.session.model = model
+            self.session.loop.model = model
+            settings.model = model
+            lines = [f"{note}orchestrator: openrouter [{model}]"]
+        else:
+            settings.base_url = normalized["orchestrator"]
+            if models["orchestrator"]:
+                settings.model = models["orchestrator"]
+            settings.provider = "local"
+            self.session.loop.provider = create_provider(settings)
+            model, served = await resolve_model(self.session.loop.provider, settings)
+            self.session.model = model
+            self.session.loop.model = model
+            settings.model = model
+            lines = [f"orchestrator: {settings.base_url} [{model}]"]
+            if model and "nuextract" in model.lower():
+                lines.append(
+                    "warning: orchestrator looks like an extraction-only model — "
+                    "point it at a tool-capable model and put NuExtract in vision"
+                )
+            _ = served
         # Subagent slots: store + best-effort probe (never fatal).
         for slot in ("vision", "summary"):
             setattr(settings, f"{slot}_base_url", normalized[slot])
@@ -439,7 +465,6 @@ class _SessionManager:
             else:
                 lines.append(f"{slot}: shares orchestrator [{slot_model or model}]")
             setattr(settings, f"{slot}_model", slot_model)
-        _ = served
         return "\n".join(lines), True
 
     def fork(self, arg: str) -> str:

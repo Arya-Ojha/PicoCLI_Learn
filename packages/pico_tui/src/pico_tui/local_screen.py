@@ -81,9 +81,9 @@ class LocalEndpointScreen(ModalScreen[SlotValues | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="local-endpoint-dialog"):
             yield Label("Local models — each slot has its own endpoint.")
-            yield Label("Leave a slot's URL empty to share the orchestrator endpoint.", id="local-hint")
+            yield Label("Leave the orchestrator URL empty for OpenRouter (default); leave a vision/summary URL empty to share the orchestrator endpoint.", id="local-hint")
             for slot, title, hint in (
-                (_ORCH, "Coding / reasoning (orchestrator — drives the agent)", "e.g. OpenRouter test model or http://localhost:8000"),
+                (_ORCH, "Coding / reasoning (orchestrator — drives the agent)", "e.g. empty = OpenRouter default, or http://localhost:8000"),
                 (_VISION, "Vision (extraction subagent — reads PDFs/images)", "e.g. http://127.0.0.1:11434"),
                 (_SUMMARY, "Summary (fast small model — summaries, simple tasks)", "e.g. http://127.0.0.1:11434"),
             ):
@@ -92,9 +92,9 @@ class LocalEndpointScreen(ModalScreen[SlotValues | None]):
                 yield Label(title, classes="slot-title")
                 yield Label(hint)
                 yield Label("Model:")
-                yield Input(id=model_id, placeholder="model id (empty = auto-detect)", value=model)
+                yield Input(id=model_id, placeholder="model id (empty = auto-detect / OpenRouter free)", value=model)
                 yield Label("Endpoint URL:")
-                yield Input(id=url_id, placeholder="http://127.0.0.1:11434", value=url)
+                yield Input(id=url_id, placeholder="empty = OpenRouter (orchestrator) or share orchestrator", value=url)
             with Horizontal():
                 yield Button("Save", id="local-save", variant="primary")
                 yield Button("Cancel", id="local-cancel")
