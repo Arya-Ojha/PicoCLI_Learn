@@ -25,6 +25,40 @@ def test_slot_explicit_values_win():
     assert settings.slot("summary") == ("big", "http://localhost:8000/v1")
 
 
+def test_slot_blank_shares_openrouter_orchestrator():
+    settings = Settings(
+        provider="openrouter",
+        model="free/model",
+        base_url="http://localhost:8000/v1",
+    )
+    assert settings.slot("summary") == ("free/model", "https://openrouter.ai/api/v1")
+    assert settings.slot("vision") == ("free/model", "https://openrouter.ai/api/v1")
+
+
+def test_slot_explicit_url_wins_over_openrouter():
+    settings = Settings(
+        provider="openrouter",
+        model="m",
+        base_url="http://localhost:8000/v1",
+        summary_model="s",
+        summary_base_url="http://127.0.0.1:11434/v1",
+    )
+    assert settings.slot("summary") == ("s", "http://127.0.0.1:11434/v1")
+
+
+def test_auth_headers_for(monkeypatch):
+    from pico_sdk.providers import auth_headers_for
+
+    settings = Settings()
+    assert auth_headers_for("http://127.0.0.1:11434/v1", settings) == {}
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    assert auth_headers_for("https://openrouter.ai/api/v1", settings) == {
+        "Authorization": "Bearer k"
+    }
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    assert auth_headers_for("https://openrouter.ai/api/v1", settings) == {}
+
+
 async def test_resolve_slot_unreachable_keeps_values():
     import pico_sdk.providers as providers_module
 

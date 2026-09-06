@@ -114,6 +114,8 @@ class SummarizeTool:
     async def _summary_call(self, model: str, base_url: str, content: str) -> str:
         import httpx
 
+        from .providers import auth_headers_for
+
         payload = {
             "model": model,
             "stream": False,
@@ -122,17 +124,20 @@ class SummarizeTool:
                 {"role": "user", "content": content},
             ],
         }
+        headers = auth_headers_for(base_url, self._settings)
         timeout = httpx.Timeout(self._timeout_s, connect=10.0)
         if self._client is not None:
             response = await self._client.post(
                 f"{base_url.rstrip('/')}/chat/completions",
                 json=payload,
+                headers=headers,
                 timeout=timeout,
             )
         else:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
-                    f"{base_url.rstrip('/')}/chat/completions", json=payload
+                    f"{base_url.rstrip('/')}/chat/completions", json=payload,
+                    headers=headers,
                 )
         response.raise_for_status()
         data = response.json()

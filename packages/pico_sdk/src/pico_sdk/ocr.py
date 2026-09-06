@@ -316,8 +316,11 @@ class OcrTool:
     ) -> str:
         import httpx
 
+        from .providers import auth_headers_for
+
         fitted, mime = _fit_for_vision(png_bytes)
         b64 = base64.b64encode(fitted).decode("ascii")
+        headers = auth_headers_for(base_url, self._settings)
         payload = {
             "model": model,
             "stream": False,
@@ -340,12 +343,14 @@ class OcrTool:
             response = await self._client.post(
                 f"{base_url.rstrip('/')}/chat/completions",
                 json=payload,
+                headers=headers,
                 timeout=timeout,
             )
         else:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
-                    f"{base_url.rstrip('/')}/chat/completions", json=payload
+                    f"{base_url.rstrip('/')}/chat/completions", json=payload,
+                    headers=headers,
                 )
         try:
             response.raise_for_status()

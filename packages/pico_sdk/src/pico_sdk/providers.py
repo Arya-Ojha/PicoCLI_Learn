@@ -18,6 +18,22 @@ from .config import Settings, load_settings
 FALLBACK_MODEL = "qwen2.5-coder:32b"
 
 
+def auth_headers_for(base_url: str, settings: Settings) -> dict:
+    """Return auth headers for a direct subagent endpoint call.
+
+    Subagent tools (``ocr_read``, ``summarize``) POST straight at the slot
+    URL instead of going through a provider client, so they need the key
+    themselves when the slot points at OpenRouter. Local endpoints need no
+    headers. Missing key yields ``{}`` — the server error then explains.
+    """
+    if "openrouter.ai" not in (base_url or "").lower():
+        return {}
+    api_key = os.environ.get(settings.api_key_env, "")
+    if not api_key:
+        return {}
+    return {"Authorization": f"Bearer {api_key}"}
+
+
 def create_provider(settings: Settings | None = None) -> Any:
     """Build the configured provider.
 

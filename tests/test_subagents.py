@@ -299,6 +299,42 @@ async def test_ocr_mode_unknown_is_error(tmp_path):
     assert outcome.is_error and "transcribe" in outcome.content
 
 
+async def test_ocr_shared_openrouter_slot_sends_auth(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    (tmp_path / "scan.png").write_bytes(b"\x89PNG fake-bytes")
+    seen: list = []
+    settings = Settings(
+        provider="openrouter",
+        model="free/model",
+        base_url="http://localhost:8000/v1",
+    )
+    tool = OcrTool(
+        tmp_path, settings, client=_chat_clientploy("hi", seen)
+    )
+    outcome = await tool.run({"path": "scan.png"})
+    assert not outcome.is_error
+    assert str(seen[0].url) == "https://openrouter.ai/api/v1/chat/completions"
+    assert seen[0].headers.get("authorization") == "Bearer test-key"
+    assert json.loads(seen[0].content.decode())["model"] == "free/model"
+
+
+async def test_summarize_shared_openrouter_slot_sends_auth(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    seen: list = []
+    settings = Settings(
+        provider="openrouter",
+        model="free/model",
+        base_url="http://localhost:8000/v1",
+    )
+    tool = SummarizeTool(
+        tmp_path, settings, client=_chat_clientploy("the gist", seen)
+    )
+    outcome = await tool.run({"text": "long document " * 500})
+    assert not outcome.is_error and outcome.content == "the gist"
+    assert str(seen[0].url) == "https://openrouter.ai/api/v1/chat/completions"
+    assert seen[0].headers.get("authorization") == "Bearer test-key"
+
+
 async def test_ocr_unsupported_suffix(tmp_path):
     (tmp_path / "a.zip").write_bytes(b"PK")
     tool = OcrTool(tmp_path, _vision_settings())

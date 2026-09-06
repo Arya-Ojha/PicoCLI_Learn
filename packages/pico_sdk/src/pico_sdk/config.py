@@ -8,6 +8,11 @@ from pathlib import Path
 from pydantic import BaseModel
 
 
+#: OpenRouter API root (mirrors ``OpenRouterProvider``'s default). Used as
+#: the endpoint for subagent slots that share an OpenRouter orchestrator.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
 class Settings(BaseModel):
     """User-configurable settings for the agent."""
 
@@ -53,7 +58,9 @@ class Settings(BaseModel):
 
         ``name`` is ``"vision"`` or ``"summary"``. Empty slot fields fall
         back to the orchestrator pair, so a single shared endpoint/model
-        works with no extra configuration.
+        works with no extra configuration. When the orchestrator runs on
+        OpenRouter, a blank slot URL resolves to the OpenRouter API (not the
+        stale local ``base_url``) so the slot really shares the orchestrator.
         """
         if name == "vision":
             model, base_url = self.vision_model, self.vision_base_url
@@ -61,7 +68,11 @@ class Settings(BaseModel):
             model, base_url = self.summary_model, self.summary_base_url
         else:
             raise KeyError(f"unknown slot: {name}")
-        return (model.strip() or self.model, base_url.strip() or self.base_url)
+        model = model.strip() or self.model
+        url = base_url.strip()
+        if not url and (self.provider or "local").lower() == "openrouter":
+            url = OPENROUTER_BASE_URL
+        return (model, url or self.base_url)
 
 
 def default_settings_path() -> Path:

@@ -494,6 +494,10 @@ class PicoApp(App[None]):
     #chat-log:focus {
         border: none;
     }
+    /* Trace window hidden for now — delete this rule to restore it. */
+    #trace-log {
+        display: none;
+    }
     #input-bar {
         margin: 0 1;
     }
